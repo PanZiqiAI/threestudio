@@ -139,6 +139,8 @@ pip install -r requirements.txt
 
 - For contributors, see [here](https://github.com/threestudio-project/threestudio#contributing-to-threestudio).
 
+- <font color="red">有关于`bitsandbytes`的问题，参见[Github Issue](https://github.com/oobabooga/text-generation-webui/issues/400#issuecomment-1474876859)。</font>
+
 ## Quickstart
 
 Here we show some basic usage of threestudio. First let's train a DreamFusion model to create a classic pancake bunny.

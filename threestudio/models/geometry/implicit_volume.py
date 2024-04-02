@@ -1,16 +1,10 @@
 from dataclasses import dataclass, field
 
-import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 import threestudio
-from threestudio.models.geometry.base import (
-    BaseGeometry,
-    BaseImplicitGeometry,
-    contract_to_unisphere,
-)
+from threestudio.models.geometry.base import BaseGeometry, BaseImplicitGeometry, contract_to_unisphere
 from threestudio.models.networks import get_encoding, get_mlp
 from threestudio.utils.ops import get_activation
 from threestudio.utils.typing import *
@@ -77,114 +71,105 @@ class ImplicitVolume(BaseImplicitGeometry):
                 self.encoding.n_output_dims, 3, self.cfg.mlp_network_config
             )
 
-    def get_activated_density(
-        self, points: Float[Tensor, "*N Di"], density: Float[Tensor, "*N 1"]
-    ) -> Tuple[Float[Tensor, "*N 1"], Float[Tensor, "*N 1"]]:
+    def get_activated_density(self, points: Float[Tensor, "*N Di"], density: Float[Tensor, "*N 1"]) -> Tuple[Float[Tensor, "*N 1"], Float[Tensor, "*N 1"]]:
+        """
+        :param points: (n_points, 3).
+        :param density: (n_points, 1).
+        """
+        ################################################################################################################
+        """ 计算density_bias. (n_points, 1).  """
+        ################################################################################################################
         density_bias: Union[float, Float[Tensor, "*N 1"]]
         if self.cfg.density_bias == "blob_dreamfusion":
             # pre-activation density bias
-            density_bias = (
-                self.cfg.density_blob_scale
-                * torch.exp(
-                    -0.5 * (points**2).sum(dim=-1) / self.cfg.density_blob_std**2
-                )[..., None]
-            )
+            density_bias = self.cfg.density_blob_scale * \
+                           torch.exp(-0.5 * (points**2).sum(dim=-1) / self.cfg.density_blob_std**2)[..., None]
         elif self.cfg.density_bias == "blob_magic3d":
             # pre-activation density bias
-            density_bias = (
-                self.cfg.density_blob_scale
-                * (
-                    1
-                    - torch.sqrt((points**2).sum(dim=-1)) / self.cfg.density_blob_std
-                )[..., None]
-            )
+            density_bias = self.cfg.density_blob_scale * \
+                           (1 - torch.sqrt((points**2).sum(dim=-1)) / self.cfg.density_blob_std)[..., None]
         elif isinstance(self.cfg.density_bias, float):
             density_bias = self.cfg.density_bias
         else:
             raise ValueError(f"Unknown density bias {self.cfg.density_bias}")
+
+        ################################################################################################################
+        """ 计算raw_density和density. (n_points, 1). """
+        ################################################################################################################
         raw_density: Float[Tensor, "*N 1"] = density + density_bias
+        """ 激活函数？ """
         density = get_activation(self.cfg.density_activation)(raw_density)
+
+        # Return.
         return raw_density, density
 
-    def forward(
-        self, points: Float[Tensor, "*N Di"], output_normal: bool = False
-    ) -> Dict[str, Float[Tensor, "..."]]:
+    def forward(self, points: Float[Tensor, "*N Di"], output_normal: bool = False) -> Dict[str, Float[Tensor, "..."]]:
         grad_enabled = torch.is_grad_enabled()
 
         if output_normal and self.cfg.normal_type == "analytic":
             torch.set_grad_enabled(True)
             points.requires_grad_(True)
 
+        # --------------------------------------------------------------------------------------------------------------
+        """ 归一化输入点. """
+        # --------------------------------------------------------------------------------------------------------------
         points_unscaled = points  # points in the original scale
-        points = contract_to_unisphere(
-            points, self.bbox, self.unbounded
-        )  # points normalized to (0, 1)
+        points = contract_to_unisphere(points, self.bbox, self.unbounded)  # points normalized to (0, 1)
 
+        ################################################################################################################
+        """ 预测密度density. """
+        ################################################################################################################
+        # (n_points, enc_channels). 每个点的编码表征.
         enc = self.encoding(points.view(-1, self.cfg.n_input_dims))
+        # (n_points, 1). 每个点的密度.
         density = self.density_network(enc).view(*points.shape[:-1], 1)
         raw_density, density = self.get_activated_density(points_unscaled, density)
+        output = {"density": density}
 
-        output = {
-            "density": density,
-        }
-
+        ################################################################################################################
+        """ 预测features. """
+        ################################################################################################################
         if self.cfg.n_feature_dims > 0:
-            features = self.feature_network(enc).view(
-                *points.shape[:-1], self.cfg.n_feature_dims
-            )
+            # (n_points, 3).
+            features = self.feature_network(enc).view(*points.shape[:-1], self.cfg.n_feature_dims)
             output.update({"features": features})
 
+        ################################################################################################################
+        """ 预测normal. """
+        ################################################################################################################
         if output_normal:
-            if (
-                self.cfg.normal_type == "finite_difference"
-                or self.cfg.normal_type == "finite_difference_laplacian"
-            ):
+            if self.cfg.normal_type == "finite_difference" or self.cfg.normal_type == "finite_difference_laplacian":
                 # TODO: use raw density
                 eps = self.cfg.finite_difference_normal_eps
                 if self.cfg.normal_type == "finite_difference_laplacian":
-                    offsets: Float[Tensor, "6 3"] = torch.as_tensor(
-                        [
-                            [eps, 0.0, 0.0],
-                            [-eps, 0.0, 0.0],
-                            [0.0, eps, 0.0],
-                            [0.0, -eps, 0.0],
-                            [0.0, 0.0, eps],
-                            [0.0, 0.0, -eps],
-                        ]
-                    ).to(points_unscaled)
+                    offsets: Float[Tensor, "6 3"] = torch.as_tensor([
+                        [eps, 0.0, 0.0],
+                        [-eps, 0.0, 0.0],
+                        [0.0, eps, 0.0],
+                        [0.0, -eps, 0.0],
+                        [0.0, 0.0, eps],
+                        [0.0, 0.0, -eps]]).to(points_unscaled)
                     points_offset: Float[Tensor, "... 6 3"] = (
-                        points_unscaled[..., None, :] + offsets
-                    ).clamp(-self.cfg.radius, self.cfg.radius)
-                    density_offset: Float[Tensor, "... 6 1"] = self.forward_density(
-                        points_offset
-                    )
-                    normal = (
-                        -0.5
-                        * (density_offset[..., 0::2, 0] - density_offset[..., 1::2, 0])
-                        / eps
-                    )
+                        points_unscaled[..., None, :] + offsets).clamp(-self.cfg.radius, self.cfg.radius)
+                    density_offset: Float[Tensor, "... 6 1"] = self.forward_density(points_offset)
+                    normal = -0.5 * (density_offset[..., 0::2, 0] - density_offset[..., 1::2, 0]) / eps
                 else:
                     offsets: Float[Tensor, "3 3"] = torch.as_tensor(
-                        [[eps, 0.0, 0.0], [0.0, eps, 0.0], [0.0, 0.0, eps]]
-                    ).to(points_unscaled)
+                        [[eps, 0.0, 0.0], [0.0, eps, 0.0], [0.0, 0.0, eps]]).to(points_unscaled)
                     points_offset: Float[Tensor, "... 3 3"] = (
-                        points_unscaled[..., None, :] + offsets
-                    ).clamp(-self.cfg.radius, self.cfg.radius)
-                    density_offset: Float[Tensor, "... 3 1"] = self.forward_density(
-                        points_offset
-                    )
+                        points_unscaled[..., None, :] + offsets).clamp(-self.cfg.radius, self.cfg.radius)
+                    density_offset: Float[Tensor, "... 3 1"] = self.forward_density(points_offset)
                     normal = -(density_offset[..., 0::1, 0] - density) / eps
                 normal = F.normalize(normal, dim=-1)
             elif self.cfg.normal_type == "pred":
                 normal = self.normal_network(enc).view(*points.shape[:-1], 3)
                 normal = F.normalize(normal, dim=-1)
             elif self.cfg.normal_type == "analytic":
+                """ 使用解析的方式计算法线：
+                @说明：法线垂直于模型表面，这也就意味着沿着这个方向，密度下降最快. 因此，基于density对点进行求导结果可得法线.
+                """
                 normal = -torch.autograd.grad(
-                    density,
-                    points_unscaled,
-                    grad_outputs=torch.ones_like(density),
-                    create_graph=True,
-                )[0]
+                    density, points_unscaled, grad_outputs=torch.ones_like(density), create_graph=True)[0]
                 normal = F.normalize(normal, dim=-1)
                 if not grad_enabled:
                     normal = normal.detach()

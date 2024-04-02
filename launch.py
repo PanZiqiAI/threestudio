@@ -106,7 +106,6 @@ def main(args, extras) -> None:
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     env_gpus_str = os.environ.get("CUDA_VISIBLE_DEVICES", None)
     env_gpus = list(env_gpus_str.split(",")) if env_gpus_str else []
-    selected_gpus = [0]
 
     # Always rely on CUDA_VISIBLE_DEVICES if specific GPU ID(s) are specified.
     # As far as Pytorch Lightning is concerned, we always use all available GPUs
@@ -144,6 +143,10 @@ def main(args, extras) -> None:
     from threestudio.utils.misc import get_rank
     from threestudio.utils.typing import Optional
 
+    ####################################################################################################################
+    # Logging.
+    ####################################################################################################################
+
     logger = logging.getLogger("pytorch_lightning")
     if args.verbose:
         logger.setLevel(logging.DEBUG)
@@ -156,7 +159,11 @@ def main(args, extras) -> None:
             else:
                 handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
 
+    ####################################################################################################################
+    # 读取custom模块.
+    ####################################################################################################################
     load_custom_modules()
+    ####################################################################################################################
 
     # parse YAML config to OmegaConf
     cfg: ExperimentConfig
@@ -165,11 +172,13 @@ def main(args, extras) -> None:
     # set a different seed for each device
     pl.seed_everything(cfg.seed + get_rank(), workers=True)
 
+    ####################################################################################################################
+    # 获取dm (datamodule) 和system.
+    ####################################################################################################################
     dm = threestudio.find(cfg.data_type)(cfg.data)
-    system: BaseSystem = threestudio.find(cfg.system_type)(
-        cfg.system, resumed=cfg.resume is not None
-    )
+    system: BaseSystem = threestudio.find(cfg.system_type)(cfg.system, resumed=cfg.resume is not None)
     system.set_save_dir(os.path.join(cfg.trial_dir, "save"))
+    ####################################################################################################################
 
     if args.gradio:
         fh = logging.FileHandler(os.path.join(cfg.trial_dir, "logs"))
@@ -179,61 +188,48 @@ def main(args, extras) -> None:
         fh.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
         logger.addHandler(fh)
 
+    ####################################################################################################################
+    # 回调函数.
+    ####################################################################################################################
     callbacks = []
     if args.train:
         callbacks += [
-            ModelCheckpoint(
-                dirpath=os.path.join(cfg.trial_dir, "ckpts"), **cfg.checkpoint
-            ),
+            ModelCheckpoint(dirpath=os.path.join(cfg.trial_dir, "ckpts"), **cfg.checkpoint),
             LearningRateMonitor(logging_interval="step"),
-            CodeSnapshotCallback(
-                os.path.join(cfg.trial_dir, "code"), use_version=False
-            ),
-            ConfigSnapshotCallback(
-                args.config,
-                cfg,
-                os.path.join(cfg.trial_dir, "configs"),
-                use_version=False,
-            ),
-        ]
+            CodeSnapshotCallback(os.path.join(cfg.trial_dir, "code"), use_version=False),
+            ConfigSnapshotCallback(args.config, cfg, os.path.join(cfg.trial_dir, "configs"), use_version=False)]
         if args.gradio:
-            callbacks += [
-                ProgressCallback(save_path=os.path.join(cfg.trial_dir, "progress"))
-            ]
+            callbacks += [ProgressCallback(save_path=os.path.join(cfg.trial_dir, "progress"))]
         else:
             callbacks += [CustomProgressBar(refresh_rate=1)]
+    ####################################################################################################################
 
     def write_to_text(file, lines):
         with open(file, "w") as f:
             for line in lines:
                 f.write(line + "\n")
 
+    ####################################################################################################################
+    # Trainer.
+    ####################################################################################################################
     loggers = []
     if args.train:
         # make tensorboard logging dir to suppress warning
         rank_zero_only(
-            lambda: os.makedirs(os.path.join(cfg.trial_dir, "tb_logs"), exist_ok=True)
-        )()
+            lambda: os.makedirs(os.path.join(cfg.trial_dir, "tb_logs"), exist_ok=True))()
         loggers += [
             TensorBoardLogger(cfg.trial_dir, name="tb_logs"),
-            CSVLogger(cfg.trial_dir, name="csv_logs"),
-        ] + system.get_loggers()
+            CSVLogger(cfg.trial_dir, name="csv_logs")] + system.get_loggers()
         rank_zero_only(
-            lambda: write_to_text(
-                os.path.join(cfg.trial_dir, "cmd.txt"),
-                ["python " + " ".join(sys.argv), str(args)],
-            )
-        )()
+            lambda: write_to_text(os.path.join(cfg.trial_dir, "cmd.txt"), ["python " + " ".join(sys.argv), str(args)]))()
 
     trainer = Trainer(
-        callbacks=callbacks,
-        logger=loggers,
-        inference_mode=False,
-        accelerator="gpu",
-        devices=devices,
-        **cfg.trainer,
-    )
+        callbacks=callbacks, logger=loggers, inference_mode=False, accelerator="gpu", devices=devices, **cfg.trainer)
+    ####################################################################################################################
 
+    ####################################################################################################################
+    """ train/validate/test/export """
+    ####################################################################################################################
     def set_system_status(system: BaseSystem, ckpt_path: Optional[str]):
         if ckpt_path is None:
             return
@@ -257,6 +253,7 @@ def main(args, extras) -> None:
     elif args.export:
         set_system_status(system, cfg.resume)
         trainer.predict(system, datamodule=dm, ckpt_path=cfg.resume)
+    ####################################################################################################################
 
 
 if __name__ == "__main__":

@@ -20,26 +20,29 @@ class DreamFusion(BaseLift3DSystem):
         # create geometry, material, background, renderer
         super().configure()
 
-    def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
-        render_out = self.renderer(**batch)
-        return {
-            **render_out,
-        }
+    ####################################################################################################################
+    # Pytorch Lightning 接口.
+    ####################################################################################################################
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Fit.
+    # ------------------------------------------------------------------------------------------------------------------
 
     def on_fit_start(self) -> None:
         super().on_fit_start()
         # only used in training
-        self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
-            self.cfg.prompt_processor
-        )
+        self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(self.cfg.prompt_processor)
         self.guidance = threestudio.find(self.cfg.guidance_type)(self.cfg.guidance)
+
+    def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+        render_out = self.renderer(**batch)
+        return {**render_out}
 
     def training_step(self, batch, batch_idx):
         out = self(batch)
         prompt_utils = self.prompt_processor()
         guidance_out = self.guidance(
-            out["comp_rgb"], prompt_utils, **batch, rgb_as_latents=False
-        )
+            out["comp_rgb"], prompt_utils, **batch, rgb_as_latents=False)
 
         loss = 0.0
 
@@ -81,6 +84,10 @@ class DreamFusion(BaseLift3DSystem):
 
         return {"loss": loss}
 
+    # ------------------------------------------------------------------------------------------------------------------
+    # Validation.
+    # ------------------------------------------------------------------------------------------------------------------
+
     def validation_step(self, batch, batch_idx):
         out = self(batch)
         self.save_image_grid(
@@ -116,6 +123,10 @@ class DreamFusion(BaseLift3DSystem):
 
     def on_validation_epoch_end(self):
         pass
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Test.
+    # ------------------------------------------------------------------------------------------------------------------
 
     def test_step(self, batch, batch_idx):
         out = self(batch)

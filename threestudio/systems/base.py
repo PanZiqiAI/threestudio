@@ -7,24 +7,42 @@ import torch.nn.functional as F
 import threestudio
 from threestudio.models.exporters.base import Exporter, ExporterOutput
 from threestudio.systems.utils import parse_optimizer, parse_scheduler
-from threestudio.utils.base import (
-    Updateable,
-    update_end_if_possible,
-    update_if_possible,
-)
+from threestudio.utils.base import (Updateable, update_end_if_possible, update_if_possible)
 from threestudio.utils.config import parse_structured
-from threestudio.utils.misc import (
-    C,
-    cleanup,
-    find_last_path,
-    get_device,
-    load_module_weights,
-)
+from threestudio.utils.misc import (C, cleanup, find_last_path, get_device, load_module_weights)
 from threestudio.utils.saving import SaverMixin
 from threestudio.utils.typing import *
 
 
 class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
+    """
+    ####################################################################################################################
+    调用trainer.fit时，各接口的调用顺序：
+    ####################################################################################################################
+    - configure_optimizers
+    - on_fit_start
+    --------------------------------------------------------------------------------------------------------------------
+    Train
+    --------------------------------------------------------------------------------------------------------------------
+    - on_train_batch_start
+    - training_step
+    - forward
+    - on_train_batch_end
+    --------------------------------------------------------------------------------------------------------------------
+    Validation.
+    --------------------------------------------------------------------------------------------------------------------
+    - on_validation_batch_start
+    - validation_step
+    - on_validation_batch_end
+    ####################################################################################################################
+    调用trainer.test时，各接口的调用顺序：
+    ####################################################################################################################
+    - on_test_batch_start
+    - test_step
+    - on_test_batch_end
+    - on_test_epoch_end
+    - on_test_end
+    """
     @dataclass
     class Config:
         loggers: dict = field(default_factory=dict)
@@ -37,6 +55,10 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
         cleanup_after_test_step: bool = False
 
     cfg: Config
+
+    ####################################################################################################################
+    """ __init__ """
+    ####################################################################################################################
 
     def __init__(self, cfg, resumed=False) -> None:
         super().__init__()
@@ -53,14 +75,27 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
             self.load_weights(self.cfg.weights, self.cfg.weights_ignore_modules)
         self.post_configure()
 
+    """ PASS """
+    def configure(self) -> None:
+        pass
+
+    """ 读取参数，恢复训练状态. """
     def load_weights(self, weights: str, ignore_modules: Optional[List[str]] = None):
-        state_dict, epoch, global_step = load_module_weights(
-            weights, ignore_modules=ignore_modules, map_location="cpu"
-        )
+        state_dict, epoch, global_step = load_module_weights(weights, ignore_modules=ignore_modules, map_location="cpu")
         self.load_state_dict(state_dict, strict=False)
         # restore step-dependent states
         self.do_update_step(epoch, global_step, on_load_weights=True)
 
+    """ PASS：参数读取后的操作. """
+    def post_configure(self) -> None:
+        """
+        executed after weights are loaded
+        """
+        pass
+
+    ####################################################################################################################
+
+    """ 恢复现在的epoch和global step到eval状态 """
     def set_resume_status(self, current_epoch: int, global_step: int):
         # restore correct epoch and global step in eval
         self._resumed_eval = True
@@ -86,18 +121,24 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
         else:
             return self.current_epoch
 
-    def configure(self) -> None:
-        pass
-
-    def post_configure(self) -> None:
-        """
-        executed after weights are loaded
-        """
-        pass
-
+    """ 不知道这是干嘛的 """
     def C(self, value: Any) -> float:
         return C(value, self.true_current_epoch, self.true_global_step)
 
+    """ PASS：处理batch数据 """
+    def preprocess_data(self, batch, stage):
+        pass
+
+    """
+    Implementing on_after_batch_transfer of DataModule does the same.
+    But on_after_batch_transfer does not support DP.
+    """
+
+    ####################################################################################################################
+    # PyTorch Lightning 接口.
+    ####################################################################################################################
+
+    """ 构建优化器（学习率调度器） """
     def configure_optimizers(self):
         optim = parse_optimizer(self.cfg.optimizer, self)
         ret = {
@@ -111,11 +152,27 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
             )
         return ret
 
+    # ------------------------------------------------------------------------------------------------------------------
+    # Traing.
+    # ------------------------------------------------------------------------------------------------------------------
+
+    def on_train_batch_start(self, batch, batch_idx, unused=0):
+        self.preprocess_data(batch, "train")
+        self.dataset = self.trainer.train_dataloader.dataset
+        update_if_possible(self.dataset, self.true_current_epoch, self.true_global_step)
+        self.do_update_step(self.true_current_epoch, self.true_global_step)
+
     def training_step(self, batch, batch_idx):
         raise NotImplementedError
 
-    def validation_step(self, batch, batch_idx):
-        raise NotImplementedError
+    def on_before_optimizer_step(self, optimizer):
+        """
+        # some gradient-related debugging goes here, example:
+        from lightning.pytorch.utilities import grad_norm
+        norms = grad_norm(self.geometry, norm_type=2)
+        print(norms)
+        """
+        pass
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
         self.dataset = self.trainer.train_dataloader.dataset
@@ -123,6 +180,19 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
             self.dataset, self.true_current_epoch, self.true_global_step
         )
         self.do_update_step_end(self.true_current_epoch, self.true_global_step)
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Validation.
+    # ------------------------------------------------------------------------------------------------------------------
+
+    def on_validation_batch_start(self, batch, batch_idx, dataloader_idx=0):
+        self.preprocess_data(batch, "validation")
+        self.dataset = self.trainer.val_dataloaders.dataset
+        update_if_possible(self.dataset, self.true_current_epoch, self.true_global_step)
+        self.do_update_step(self.true_current_epoch, self.true_global_step)
+
+    def validation_step(self, batch, batch_idx):
+        raise NotImplementedError
 
     def on_validation_batch_end(self, outputs, batch, batch_idx):
         self.dataset = self.trainer.val_dataloaders.dataset
@@ -136,6 +206,16 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
 
     def on_validation_epoch_end(self):
         raise NotImplementedError
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Test.
+    # ------------------------------------------------------------------------------------------------------------------
+
+    def on_test_batch_start(self, batch, batch_idx, dataloader_idx=0):
+        self.preprocess_data(batch, "test")
+        self.dataset = self.trainer.test_dataloaders.dataset
+        update_if_possible(self.dataset, self.true_current_epoch, self.true_global_step)
+        self.do_update_step(self.true_current_epoch, self.true_global_step)
 
     def test_step(self, batch, batch_idx):
         raise NotImplementedError
@@ -153,6 +233,16 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
     def on_test_epoch_end(self):
         pass
 
+    # ------------------------------------------------------------------------------------------------------------------
+    # Predict.
+    # ------------------------------------------------------------------------------------------------------------------
+
+    def on_predict_batch_start(self, batch, batch_idx, dataloader_idx=0):
+        self.preprocess_data(batch, "predict")
+        self.dataset = self.trainer.predict_dataloaders.dataset
+        update_if_possible(self.dataset, self.true_current_epoch, self.true_global_step)
+        self.do_update_step(self.true_current_epoch, self.true_global_step)
+
     def predict_step(self, batch, batch_idx):
         raise NotImplementedError
 
@@ -169,48 +259,11 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
     def on_predict_epoch_end(self):
         pass
 
-    def preprocess_data(self, batch, stage):
-        pass
-
-    """
-    Implementing on_after_batch_transfer of DataModule does the same.
-    But on_after_batch_transfer does not support DP.
-    """
-
-    def on_train_batch_start(self, batch, batch_idx, unused=0):
-        self.preprocess_data(batch, "train")
-        self.dataset = self.trainer.train_dataloader.dataset
-        update_if_possible(self.dataset, self.true_current_epoch, self.true_global_step)
-        self.do_update_step(self.true_current_epoch, self.true_global_step)
-
-    def on_validation_batch_start(self, batch, batch_idx, dataloader_idx=0):
-        self.preprocess_data(batch, "validation")
-        self.dataset = self.trainer.val_dataloaders.dataset
-        update_if_possible(self.dataset, self.true_current_epoch, self.true_global_step)
-        self.do_update_step(self.true_current_epoch, self.true_global_step)
-
-    def on_test_batch_start(self, batch, batch_idx, dataloader_idx=0):
-        self.preprocess_data(batch, "test")
-        self.dataset = self.trainer.test_dataloaders.dataset
-        update_if_possible(self.dataset, self.true_current_epoch, self.true_global_step)
-        self.do_update_step(self.true_current_epoch, self.true_global_step)
-
-    def on_predict_batch_start(self, batch, batch_idx, dataloader_idx=0):
-        self.preprocess_data(batch, "predict")
-        self.dataset = self.trainer.predict_dataloaders.dataset
-        update_if_possible(self.dataset, self.true_current_epoch, self.true_global_step)
-        self.do_update_step(self.true_current_epoch, self.true_global_step)
+    ####################################################################################################################
+    # Updateable 接口.
+    ####################################################################################################################
 
     def update_step(self, epoch: int, global_step: int, on_load_weights: bool = False):
-        pass
-
-    def on_before_optimizer_step(self, optimizer):
-        """
-        # some gradient-related debugging goes here, example:
-        from lightning.pytorch.utilities import grad_norm
-        norms = grad_norm(self.geometry, norm_type=2)
-        print(norms)
-        """
         pass
 
 
@@ -302,6 +355,14 @@ class BaseLift3DSystem(BaseSystem):
             background=self.background,
         )
 
+    ####################################################################################################################
+    # Pytorch Lightning 接口.
+    ####################################################################################################################
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Fit.
+    # ------------------------------------------------------------------------------------------------------------------
+
     def on_fit_start(self) -> None:
         if self._save_dir is not None:
             threestudio.info(f"Validation results will be saved to {self._save_dir}")
@@ -310,9 +371,17 @@ class BaseLift3DSystem(BaseSystem):
                 f"Saving directory not set for the system, visualization results will not be saved"
             )
 
+    # ------------------------------------------------------------------------------------------------------------------
+    # Test.
+    # ------------------------------------------------------------------------------------------------------------------
+
     def on_test_end(self) -> None:
         if self._save_dir is not None:
             threestudio.info(f"Test results saved to {self._save_dir}")
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Predict.
+    # ------------------------------------------------------------------------------------------------------------------
 
     def on_predict_start(self) -> None:
         self.exporter: Exporter = threestudio.find(self.cfg.exporter_type)(
@@ -340,6 +409,8 @@ class BaseLift3DSystem(BaseSystem):
     def on_predict_end(self) -> None:
         if self._save_dir is not None:
             threestudio.info(f"Export assets saved to {self._save_dir}")
+
+    ####################################################################################################################
 
     def guidance_evaluation_save(self, comp_rgb, guidance_eval_out):
         B, size = comp_rgb.shape[:2]

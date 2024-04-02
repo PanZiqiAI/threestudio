@@ -19,15 +19,11 @@ class Renderer(BaseModule):
 
     cfg: Config
 
-    def configure(
-        self,
-        geometry: BaseImplicitGeometry,
-        material: BaseMaterial,
-        background: BaseBackground,
-    ) -> None:
+    def configure(self, geometry: BaseImplicitGeometry, material: BaseMaterial, background: BaseBackground) -> None:
         # keep references to submodules using namedtuple, avoid being registered as modules
         @dataclass
         class SubModules:
+            """ 模型、材质、背景. """
             geometry: BaseImplicitGeometry
             material: BaseMaterial
             background: BaseBackground
@@ -36,16 +32,9 @@ class Renderer(BaseModule):
 
         # set up bounding box
         self.bbox: Float[Tensor, "2 3"]
-        self.register_buffer(
-            "bbox",
-            torch.as_tensor(
-                [
-                    [-self.cfg.radius, -self.cfg.radius, -self.cfg.radius],
-                    [self.cfg.radius, self.cfg.radius, self.cfg.radius],
-                ],
-                dtype=torch.float32,
-            ),
-        )
+        self.register_buffer("bbox", torch.as_tensor([
+            [-self.cfg.radius, -self.cfg.radius, -self.cfg.radius],
+            [self.cfg.radius, self.cfg.radius, self.cfg.radius]], dtype=torch.float32))
 
     def forward(self, *args, **kwargs) -> Dict[str, Any]:
         raise NotImplementedError

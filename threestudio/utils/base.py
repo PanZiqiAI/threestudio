@@ -19,20 +19,13 @@ class Configurable:
 
 
 class Updateable:
-    def do_update_step(
-        self, epoch: int, global_step: int, on_load_weights: bool = False
-    ):
+    def do_update_step(self, epoch: int, global_step: int, on_load_weights: bool = False):
         for attr in self.__dir__():
-            if attr.startswith("_"):
-                continue
-            try:
-                module = getattr(self, attr)
-            except:
-                continue  # ignore attributes like property, which can't be retrived using getattr?
+            if attr.startswith("_"): continue
+            try: module = getattr(self, attr)
+            except: continue  # ignore attributes like property, which can't be retrived using getattr?
             if isinstance(module, Updateable):
-                module.do_update_step(
-                    epoch, global_step, on_load_weights=on_load_weights
-                )
+                module.do_update_step(epoch, global_step, on_load_weights=on_load_weights)
         self.update_step(epoch, global_step, on_load_weights=on_load_weights)
 
     def do_update_step_end(self, epoch: int, global_step: int):

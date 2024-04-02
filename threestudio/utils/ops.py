@@ -178,13 +178,16 @@ def chunk_batch(func: Callable, chunk_size: int, *args, **kwargs) -> Any:
 
 
 def get_ray_directions(
-    H: int,
-    W: int,
-    focal: Union[float, Tuple[float, float]],
-    principal: Optional[Tuple[float, float]] = None,
-    use_pixel_centers: bool = True,
-) -> Float[Tensor, "H W 3"]:
-    """
+    H: int, W: int, focal: Union[float, Tuple[float, float]], principal: Optional[Tuple[float, float]] = None,
+    use_pixel_centers: bool = True) -> Float[Tensor, "H W 3"]:
+    """ 对于渲染图像的所有像素，获取它们在相机坐标系中的光线方向.
+    :param H: 渲染图像高度.
+    :param W: 渲染图像宽度.
+    :param focal: 相机焦点.
+    :param principal: 主点（光学中心）.
+    :param use_pixel_centers: 计算的时候使用像素中心位置还是左上角位置.
+    :return: 方向. (H, W, 3)，其中H/W对应于每一个像素，3对应这个像素的光线方向.
+
     Get ray directions for all pixels in camera coordinate.
     Reference: https://www.scratchapixel.com/lessons/3d-basic-rendering/
                ray-tracing-generating-camera-rays/standard-coordinate-systems
@@ -206,24 +209,25 @@ def get_ray_directions(
 
     i, j = torch.meshgrid(
         torch.arange(W, dtype=torch.float32) + pixel_center,
-        torch.arange(H, dtype=torch.float32) + pixel_center,
-        indexing="xy",
-    )
+        torch.arange(H, dtype=torch.float32) + pixel_center, indexing="xy")
 
-    directions: Float[Tensor, "H W 3"] = torch.stack(
-        [(i - cx) / fx, -(j - cy) / fy, -torch.ones_like(i)], -1
-    )
+    directions: Float[Tensor, "H W 3"] = torch.stack([(i - cx) / fx, -(j - cy) / fy, -torch.ones_like(i)], -1)
 
     return directions
 
 
 def get_rays(
-    directions: Float[Tensor, "... 3"],
-    c2w: Float[Tensor, "... 4 4"],
-    keepdim=False,
-    noise_scale=0.0,
-    normalize=True,
-) -> Tuple[Float[Tensor, "... 3"], Float[Tensor, "... 3"]]:
+    directions: Float[Tensor, "... 3"], c2w: Float[Tensor, "... 4 4"], keepdim=False, noise_scale=0.0, normalize=True) -> Tuple[Float[Tensor, "... 3"], Float[Tensor, "... 3"]]:
+    """
+    :param directions: 像素光线方向. 相机坐标系.
+    :param c2w: 相机到世界坐标系的变换矩阵.
+    :param keepdim:
+    :param noise_scale:
+    :param normalize:
+    :return:
+        - rays_d: directions转换到世界中.
+        - rays_o: 实际上就是相机在世界中的位置.
+    """
     # Rotate ray directions from camera coordinate to the world coordinate
     assert directions.shape[-1] == 3
 
@@ -236,20 +240,14 @@ def get_rays(
     elif directions.ndim == 3:  # (H, W, 3)
         assert c2w.ndim in [2, 3]
         if c2w.ndim == 2:  # (4, 4)
-            rays_d = (directions[:, :, None, :] * c2w[None, None, :3, :3]).sum(
-                -1
-            )  # (H, W, 3)
+            rays_d = (directions[:, :, None, :] * c2w[None, None, :3, :3]).sum(-1)  # (H, W, 3)
             rays_o = c2w[None, None, :3, 3].expand(rays_d.shape)
         elif c2w.ndim == 3:  # (B, 4, 4)
-            rays_d = (directions[None, :, :, None, :] * c2w[:, None, None, :3, :3]).sum(
-                -1
-            )  # (B, H, W, 3)
+            rays_d = (directions[None, :, :, None, :] * c2w[:, None, None, :3, :3]).sum(-1)  # (B, H, W, 3)
             rays_o = c2w[:, None, None, :3, 3].expand(rays_d.shape)
     elif directions.ndim == 4:  # (B, H, W, 3)
         assert c2w.ndim == 3  # (B, 4, 4)
-        rays_d = (directions[:, :, :, None, :] * c2w[:, None, None, :3, :3]).sum(
-            -1
-        )  # (B, H, W, 3)
+        rays_d = (directions[:, :, :, None, :] * c2w[:, None, None, :3, :3]).sum(-1)  # (B, H, W, 3)
         rays_o = c2w[:, None, None, :3, 3].expand(rays_d.shape)
 
     # add camera noise to avoid grid-like artifect
@@ -266,24 +264,24 @@ def get_rays(
     return rays_o, rays_d
 
 
-def get_projection_matrix(
-    fovy: Float[Tensor, "B"], aspect_wh: float, near: float, far: float
-) -> Float[Tensor, "B 4 4"]:
+def get_projection_matrix(fovy: Float[Tensor, "B"], aspect_wh: float, near: float, far: float) -> Float[Tensor, "B 4 4"]:
+    """
+    投影矩阵：将世界中的点投影到成像平面（近平面）上.
+    """
     batch_size = fovy.shape[0]
     proj_mtx = torch.zeros(batch_size, 4, 4, dtype=torch.float32)
     proj_mtx[:, 0, 0] = 1.0 / (torch.tan(fovy / 2.0) * aspect_wh)
-    proj_mtx[:, 1, 1] = -1.0 / torch.tan(
-        fovy / 2.0
-    )  # add a negative sign here as the y axis is flipped in nvdiffrast output
+    proj_mtx[:, 1, 1] = -1.0 / torch.tan(fovy / 2.0)  # add a negative sign here as the y axis is flipped in nvdiffrast output
     proj_mtx[:, 2, 2] = -(far + near) / (far - near)
     proj_mtx[:, 2, 3] = -2.0 * far * near / (far - near)
     proj_mtx[:, 3, 2] = -1.0
     return proj_mtx
 
 
-def get_mvp_matrix(
-    c2w: Float[Tensor, "B 4 4"], proj_mtx: Float[Tensor, "B 4 4"]
-) -> Float[Tensor, "B 4 4"]:
+def get_mvp_matrix(c2w: Float[Tensor, "B 4 4"], proj_mtx: Float[Tensor, "B 4 4"]) -> Float[Tensor, "B 4 4"]:
+    """
+    mvp矩阵：将相机坐标系中的点变换到成像平面上.
+    """
     # calculate w2c from c2w: R' = Rt, t' = -Rt * t
     # mathematically equivalent to (c2w)^-1
     w2c: Float[Tensor, "B 4 4"] = torch.zeros(c2w.shape[0], 4, 4).to(c2w)
@@ -295,9 +293,7 @@ def get_mvp_matrix(
     return mvp_mtx
 
 
-def get_full_projection_matrix(
-    c2w: Float[Tensor, "B 4 4"], proj_mtx: Float[Tensor, "B 4 4"]
-) -> Float[Tensor, "B 4 4"]:
+def get_full_projection_matrix(c2w: Float[Tensor, "B 4 4"], proj_mtx: Float[Tensor, "B 4 4"]) -> Float[Tensor, "B 4 4"]:
     return (c2w.unsqueeze(0).bmm(proj_mtx.unsqueeze(0))).squeeze(0)
 
 

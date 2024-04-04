@@ -266,7 +266,7 @@ def get_rays(
 
 def get_projection_matrix(fovy: Float[Tensor, "B"], aspect_wh: float, near: float, far: float) -> Float[Tensor, "B 4 4"]:
     """
-    投影矩阵：将世界中的点投影到成像平面（近平面）上.
+    投影矩阵：相机坐标系中，将点投影到成像平面（近平面）上.
     """
     batch_size = fovy.shape[0]
     proj_mtx = torch.zeros(batch_size, 4, 4, dtype=torch.float32)
@@ -280,7 +280,7 @@ def get_projection_matrix(fovy: Float[Tensor, "B"], aspect_wh: float, near: floa
 
 def get_mvp_matrix(c2w: Float[Tensor, "B 4 4"], proj_mtx: Float[Tensor, "B 4 4"]) -> Float[Tensor, "B 4 4"]:
     """
-    mvp矩阵：将相机坐标系中的点变换到成像平面上.
+    mvp矩阵：将世界坐标系中的点变换到相机坐标系的成像平面上.
     """
     # calculate w2c from c2w: R' = Rt, t' = -Rt * t
     # mathematically equivalent to (c2w)^-1

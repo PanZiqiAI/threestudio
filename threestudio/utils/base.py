@@ -30,12 +30,9 @@ class Updateable:
 
     def do_update_step_end(self, epoch: int, global_step: int):
         for attr in self.__dir__():
-            if attr.startswith("_"):
-                continue
-            try:
-                module = getattr(self, attr)
-            except:
-                continue  # ignore attributes like property, which can't be retrived using getattr?
+            if attr.startswith("_"): continue
+            try: module = getattr(self, attr)
+            except: continue  # ignore attributes like property, which can't be retrived using getattr?
             if isinstance(module, Updateable):
                 module.do_update_step_end(epoch, global_step)
         self.update_step_end(epoch, global_step)

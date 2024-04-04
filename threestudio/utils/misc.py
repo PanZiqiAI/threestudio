@@ -30,36 +30,45 @@ def get_device():
     return torch.device(f"cuda:{get_rank()}")
 
 
-def load_module_weights(
-    path, module_name=None, ignore_modules=None, map_location=None
-) -> Tuple[dict, int, int]:
+def load_module_weights(path, module_name=None, ignore_modules=None, map_location=None):
+    """ 读取模块state_dict/epoch/global_step.
+    :param path: string. 检查点路径.
+    :param module_name: string. 要读取的模块名称.
+    :param ignore_modules:
+    :param map_location:
+    """
     if module_name is not None and ignore_modules is not None:
         raise ValueError("module_name and ignore_modules cannot be both set")
-    if map_location is None:
-        map_location = get_device()
+    if map_location is None: map_location = get_device()
 
+    # ------------------------------------------------------------------------------------------------------------------
+    # 读取检查点.
+    # ------------------------------------------------------------------------------------------------------------------
     ckpt = torch.load(path, map_location=map_location)
     state_dict = ckpt["state_dict"]
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # 获取模块的state_dict.
+    # ------------------------------------------------------------------------------------------------------------------
     state_dict_to_load = state_dict
 
+    """ 过滤到任意以“ignore_module.”开头的模块. """
     if ignore_modules is not None:
         state_dict_to_load = {}
         for k, v in state_dict.items():
-            ignore = any(
-                [k.startswith(ignore_module + ".") for ignore_module in ignore_modules]
-            )
-            if ignore:
-                continue
+            ignore = any([k.startswith(ignore_module + ".") for ignore_module in ignore_modules])
+            if ignore: continue
             state_dict_to_load[k] = v
 
+    """ 匹配以module_name开头，后跟一个点“.”，然后是任意字符串（除了换行符）的字符串. """
     if module_name is not None:
         state_dict_to_load = {}
         for k, v in state_dict.items():
             m = re.match(rf"^{module_name}\.(.*)$", k)
-            if m is None:
-                continue
-            state_dict_to_load[m.group(1)] = v
+            if m is None: continue
+            state_dict_to_load[m.group(1)] = v      # m.group(1)代表匹配到的字符串中点“.”后面的部分.
 
+    # Return
     return state_dict_to_load, ckpt["epoch"], ckpt["global_step"]
 
 

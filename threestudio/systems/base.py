@@ -125,15 +125,6 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
     def C(self, value: Any) -> float:
         return C(value, self.true_current_epoch, self.true_global_step)
 
-    """ PASS：处理batch数据 """
-    def preprocess_data(self, batch, stage):
-        pass
-
-    """
-    Implementing on_after_batch_transfer of DataModule does the same.
-    But on_after_batch_transfer does not support DP.
-    """
-
     ####################################################################################################################
     # PyTorch Lightning 接口.
     ####################################################################################################################
@@ -230,9 +221,6 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
             # cleanup to save vram
             cleanup()
 
-    def on_test_epoch_end(self):
-        pass
-
     # ------------------------------------------------------------------------------------------------------------------
     # Predict.
     # ------------------------------------------------------------------------------------------------------------------
@@ -255,16 +243,6 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
         if self.cfg.cleanup_after_test_step:
             # cleanup to save vram
             cleanup()
-
-    def on_predict_epoch_end(self):
-        pass
-
-    ####################################################################################################################
-    # Updateable 接口.
-    ####################################################################################################################
-
-    def update_step(self, epoch: int, global_step: int, on_load_weights: bool = False):
-        pass
 
 
 class BaseLift3DSystem(BaseSystem):

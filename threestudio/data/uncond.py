@@ -291,6 +291,7 @@ class RandomCameraIterableDataset(IterableDataset, Updateable):
 
 
 class RandomCameraDataset(Dataset):
+
     def __init__(self, cfg: Any, split: str) -> None:
         super().__init__()
         self.cfg: RandomCameraDataModuleConfig = cfg

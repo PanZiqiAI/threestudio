@@ -18,7 +18,7 @@ data: # threestudio/data/image.py -> SingleImageDataModuleConfig
   random_camera: # threestudio/data/uncond.py -> RandomCameraDataModuleConfig
     height: [64, 128, 256]
     width: [64, 128, 256]
-    batch_size: [12, 4, 2]
+    batch_size: [6, 2, 1] # [12, 4, 2]
     resolution_milestones: [200, 300]
     eval_height: 512
     eval_width: 512

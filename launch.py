@@ -224,7 +224,7 @@ def main(args, extras) -> None:
             lambda: write_to_text(os.path.join(cfg.trial_dir, "cmd.txt"), ["python " + " ".join(sys.argv), str(args)]))()
 
     trainer = Trainer(
-        callbacks=callbacks, logger=loggers, inference_mode=False, accelerator="gpu", devices=devices, **cfg.trainer)
+        callbacks=callbacks, logger=loggers, inference_mode=False, accelerator="gpu", devices=devices,  **cfg.trainer)
     ####################################################################################################################
 
     ####################################################################################################################

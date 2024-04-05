@@ -143,6 +143,9 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
             )
         return ret
 
+    def preprocess_data(self, batch, stage):
+        pass
+
     # ------------------------------------------------------------------------------------------------------------------
     # Traing.
     # ------------------------------------------------------------------------------------------------------------------
@@ -323,9 +326,7 @@ class BaseLift3DSystem(BaseSystem):
             self.geometry = threestudio.find(self.cfg.geometry_type)(self.cfg.geometry)
 
         self.material = threestudio.find(self.cfg.material_type)(self.cfg.material)
-        self.background = threestudio.find(self.cfg.background_type)(
-            self.cfg.background
-        )
+        self.background = threestudio.find(self.cfg.background_type)(self.cfg.background)
         self.renderer = threestudio.find(self.cfg.renderer_type)(
             self.cfg.renderer,
             geometry=self.geometry,

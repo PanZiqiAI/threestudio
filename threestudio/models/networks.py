@@ -13,6 +13,10 @@ from threestudio.utils.ops import get_activation
 from threestudio.utils.typing import *
 
 
+########################################################################################################################
+# Encoding.
+########################################################################################################################
+
 class ProgressiveBandFrequency(nn.Module, Updateable):
     def __init__(self, in_channels: int, config: dict):
         super().__init__()
@@ -22,9 +26,7 @@ class ProgressiveBandFrequency(nn.Module, Updateable):
         self.freq_bands = 2 ** torch.linspace(0, self.N_freqs - 1, self.N_freqs)
         self.n_output_dims = self.in_channels * (len(self.funcs) * self.N_freqs)
         self.n_masking_step = config.get("n_masking_step", 0)
-        self.update_step(
-            None, None
-        )  # mask should be updated at the beginning each step
+        self.update_step(None, None)  # mask should be updated at the beginning each step
 
     def forward(self, x):
         out = []
@@ -37,31 +39,51 @@ class ProgressiveBandFrequency(nn.Module, Updateable):
         if self.n_masking_step <= 0 or global_step is None:
             self.mask = torch.ones(self.N_freqs, dtype=torch.float32)
         else:
-            self.mask = (
-                1.0
-                - torch.cos(
-                    math.pi
-                    * (
-                        global_step / self.n_masking_step * self.N_freqs
-                        - torch.arange(0, self.N_freqs)
-                    ).clamp(0, 1)
-                )
-            ) / 2.0
-            threestudio.debug(
-                f"Update mask: {global_step}/{self.n_masking_step} {self.mask}"
-            )
+            self.mask = (1.0 - torch.cos(
+                math.pi * (global_step / self.n_masking_step * self.N_freqs - torch.arange(0, self.N_freqs)).clamp(0, 1)
+            )) / 2.0
+            threestudio.debug(f"Update mask: {global_step}/{self.n_masking_step} {self.mask}")
 
 
-class TCNNEncoding(nn.Module):
-    def __init__(self, in_channels, config, dtype=torch.float32) -> None:
+class ProgressiveBandHashGrid(nn.Module, Updateable):
+    def __init__(self, in_channels, config, dtype=torch.float32):
         super().__init__()
         self.n_input_dims = in_channels
+        encoding_config = config.copy()
+        encoding_config["otype"] = "Grid"
+        encoding_config["type"] = "Hash"
         with torch.cuda.device(get_rank()):
-            self.encoding = tcnn.Encoding(in_channels, config, dtype=dtype)
+            self.encoding = tcnn.Encoding(in_channels, encoding_config, dtype=dtype)
         self.n_output_dims = self.encoding.n_output_dims
+        self.n_level = config["n_levels"]
+        self.n_features_per_level = config["n_features_per_level"]
+        self.start_level, self.start_step, self.update_steps = (
+            config["start_level"],
+            config["start_step"],
+            config["update_steps"],
+        )
+        self.current_level = self.start_level
+        self.mask = torch.zeros(
+            self.n_level * self.n_features_per_level,
+            dtype=torch.float32,
+            device=get_rank(),
+        )
 
     def forward(self, x):
-        return self.encoding(x)
+        enc = self.encoding(x)
+        enc = enc * self.mask
+        return enc
+
+    def update_step(self, epoch, global_step, on_load_weights=False):
+        current_level = min(
+            self.start_level
+            + max(global_step - self.start_step, 0) // self.update_steps,
+            self.n_level,
+        )
+        if current_level > self.current_level:
+            threestudio.debug(f"Update current level to {current_level}")
+        self.current_level = current_level
+        self.mask[: self.current_level * self.n_features_per_level] = 1.0
 
 
 # 4D implicit decomposition of space and time (4D-fy)
@@ -126,45 +148,16 @@ class TCNNEncodingSpatialTime(nn.Module):
         return enc
 
 
-class ProgressiveBandHashGrid(nn.Module, Updateable):
-    def __init__(self, in_channels, config, dtype=torch.float32):
+class TCNNEncoding(nn.Module):
+    def __init__(self, in_channels, config, dtype=torch.float32) -> None:
         super().__init__()
         self.n_input_dims = in_channels
-        encoding_config = config.copy()
-        encoding_config["otype"] = "Grid"
-        encoding_config["type"] = "Hash"
         with torch.cuda.device(get_rank()):
-            self.encoding = tcnn.Encoding(in_channels, encoding_config, dtype=dtype)
+            self.encoding = tcnn.Encoding(in_channels, config, dtype=dtype)
         self.n_output_dims = self.encoding.n_output_dims
-        self.n_level = config["n_levels"]
-        self.n_features_per_level = config["n_features_per_level"]
-        self.start_level, self.start_step, self.update_steps = (
-            config["start_level"],
-            config["start_step"],
-            config["update_steps"],
-        )
-        self.current_level = self.start_level
-        self.mask = torch.zeros(
-            self.n_level * self.n_features_per_level,
-            dtype=torch.float32,
-            device=get_rank(),
-        )
 
     def forward(self, x):
-        enc = self.encoding(x)
-        enc = enc * self.mask
-        return enc
-
-    def update_step(self, epoch, global_step, on_load_weights=False):
-        current_level = min(
-            self.start_level
-            + max(global_step - self.start_step, 0) // self.update_steps,
-            self.n_level,
-        )
-        if current_level > self.current_level:
-            threestudio.debug(f"Update current level to {current_level}")
-        self.current_level = current_level
-        self.mask[: self.current_level * self.n_features_per_level] = 1.0
+        return self.encoding(x)
 
 
 class CompositeEncoding(nn.Module, Updateable):
@@ -210,6 +203,10 @@ def get_encoding(n_input_dims: int, config) -> nn.Module:
     )  # FIXME: hard coded
     return encoding
 
+
+########################################################################################################################
+# MLP.
+########################################################################################################################
 
 class VanillaMLP(nn.Module):
     def __init__(self, dim_in: int, dim_out: int, config: dict):

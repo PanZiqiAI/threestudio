@@ -32,6 +32,7 @@ class SaverMixin:
         return self._save_dir
 
     def convert_data(self, data):
+        """ 将数据或其元素转为numpy. """
         if data is None:
             return None
         elif isinstance(data, np.ndarray):

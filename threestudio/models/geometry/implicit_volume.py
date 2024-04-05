@@ -54,22 +54,12 @@ class ImplicitVolume(BaseImplicitGeometry):
 
     def configure(self) -> None:
         super().configure()
-        self.encoding = get_encoding(
-            self.cfg.n_input_dims, self.cfg.pos_encoding_config
-        )
-        self.density_network = get_mlp(
-            self.encoding.n_output_dims, 1, self.cfg.mlp_network_config
-        )
+        self.encoding = get_encoding(self.cfg.n_input_dims, self.cfg.pos_encoding_config)
+        self.density_network = get_mlp(self.encoding.n_output_dims, 1, self.cfg.mlp_network_config)
         if self.cfg.n_feature_dims > 0:
-            self.feature_network = get_mlp(
-                self.encoding.n_output_dims,
-                self.cfg.n_feature_dims,
-                self.cfg.mlp_network_config,
-            )
+            self.feature_network = get_mlp(self.encoding.n_output_dims, self.cfg.n_feature_dims, self.cfg.mlp_network_config)
         if self.cfg.normal_type == "pred":
-            self.normal_network = get_mlp(
-                self.encoding.n_output_dims, 3, self.cfg.mlp_network_config
-            )
+            self.normal_network = get_mlp(self.encoding.n_output_dims, 3, self.cfg.mlp_network_config)
 
     def get_activated_density(self, points: Float[Tensor, "*N Di"], density: Float[Tensor, "*N 1"]) -> Tuple[Float[Tensor, "*N 1"], Float[Tensor, "*N 1"]]:
         """
@@ -191,19 +181,13 @@ class ImplicitVolume(BaseImplicitGeometry):
         _, density = self.get_activated_density(points_unscaled, density)
         return density
 
-    def forward_field(
-        self, points: Float[Tensor, "*N Di"]
-    ) -> Tuple[Float[Tensor, "*N 1"], Optional[Float[Tensor, "*N 3"]]]:
+    def forward_field(self, points: Float[Tensor, "*N Di"]) -> Tuple[Float[Tensor, "*N 1"], Optional[Float[Tensor, "*N 3"]]]:
         if self.cfg.isosurface_deformable_grid:
-            threestudio.warn(
-                f"{self.__class__.__name__} does not support isosurface_deformable_grid. Ignoring."
-            )
+            threestudio.warn(f"{self.__class__.__name__} does not support isosurface_deformable_grid. Ignoring.")
         density = self.forward_density(points)
         return density, None
 
-    def forward_level(
-        self, field: Float[Tensor, "*N 1"], threshold: float
-    ) -> Float[Tensor, "*N 1"]:
+    def forward_level(self, field: Float[Tensor, "*N 1"], threshold: float) -> Float[Tensor, "*N 1"]:
         return -(field - threshold)
 
     def export(self, points: Float[Tensor, "*N Di"], **kwargs) -> Dict[str, Any]:
@@ -213,14 +197,8 @@ class ImplicitVolume(BaseImplicitGeometry):
         points_unscaled = points
         points = contract_to_unisphere(points_unscaled, self.bbox, self.unbounded)
         enc = self.encoding(points.reshape(-1, self.cfg.n_input_dims))
-        features = self.feature_network(enc).view(
-            *points.shape[:-1], self.cfg.n_feature_dims
-        )
-        out.update(
-            {
-                "features": features,
-            }
-        )
+        features = self.feature_network(enc).view(*points.shape[:-1], self.cfg.n_feature_dims)
+        out.update({"features": features})
         return out
 
     @staticmethod

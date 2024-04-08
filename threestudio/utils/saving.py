@@ -44,10 +44,7 @@ class SaverMixin:
         elif isinstance(data, dict):
             return {k: self.convert_data(v) for k, v in data.items()}
         else:
-            raise TypeError(
-                "Data must be in type numpy.ndarray, torch.Tensor, list or dict, getting",
-                type(data),
-            )
+            raise TypeError("Data must be in type numpy.ndarray, torch.Tensor, list or dict, getting", type(data))
 
     def get_save_path(self, filename):
         save_path = os.path.join(self.get_save_dir(), filename)
@@ -67,87 +64,64 @@ class SaverMixin:
             return []
 
     DEFAULT_RGB_KWARGS = {"data_format": "HWC", "data_range": (0, 1)}
-    DEFAULT_UV_KWARGS = {
-        "data_format": "HWC",
-        "data_range": (0, 1),
-        "cmap": "checkerboard",
-    }
+    DEFAULT_UV_KWARGS = {"data_format": "HWC", "data_range": (0, 1), "cmap": "checkerboard"}
     DEFAULT_GRAYSCALE_KWARGS = {"data_range": None, "cmap": "jet"}
     DEFAULT_GRID_KWARGS = {"align": "max"}
 
     def get_rgb_image_(self, img, data_format, data_range, rgba=False):
+        """
+        :param img. E.g., (512, 512, 3).
+        :param data_format: E.g., 'HWC'.
+        :param data_range: E.g., (0, 1).
+        :param rgba:
+        """
         img = self.convert_data(img)
         assert data_format in ["CHW", "HWC"]
+        # 转换格式.
         if data_format == "CHW":
             img = img.transpose(1, 2, 0)
+        # 转换类型.
         if img.dtype != np.uint8:
             img = img.clip(min=data_range[0], max=data_range[1])
-            img = (
-                (img - data_range[0]) / (data_range[1] - data_range[0]) * 255.0
-            ).astype(np.uint8)
+            img = ((img - data_range[0]) / (data_range[1] - data_range[0]) * 255.0).astype(np.uint8)
         nc = 4 if rgba else 3
-        imgs = [img[..., start : start + nc] for start in range(0, img.shape[-1], nc)]
+        # --------------------------------------------------------------------------------------------------------------
+        # 在列上拼接图像.
+        # --------------------------------------------------------------------------------------------------------------
+        imgs = [img[..., start:start+nc] for start in range(0, img.shape[-1], nc)]
         imgs = [
-            img_
-            if img_.shape[-1] == nc
-            else np.concatenate(
-                [
-                    img_,
-                    np.zeros(
-                        (img_.shape[0], img_.shape[1], nc - img_.shape[2]),
-                        dtype=img_.dtype,
-                    ),
-                ],
-                axis=-1,
-            )
-            for img_ in imgs
-        ]
+            img_ if img_.shape[-1] == nc else np.concatenate([
+                img_, np.zeros((img_.shape[0], img_.shape[1], nc - img_.shape[2]), dtype=img_.dtype)], axis=-1
+            ) for img_ in imgs]
         img = np.concatenate(imgs, axis=1)
-        if rgba:
-            img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGRA)
-        else:
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        return img
+        # Return
+        if rgba: return cv2.cvtColor(img, cv2.COLOR_RGBA2BGRA)
+        else: return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
-    def _save_rgb_image(
-        self,
-        filename,
-        img,
-        data_format,
-        data_range,
-        name: Optional[str] = None,
-        step: Optional[int] = None,
-    ):
+    def _save_rgb_image(self, filename, img, data_format, data_range, name: Optional[str] = None, step: Optional[int] = None):
         img = self.get_rgb_image_(img, data_format, data_range)
         cv2.imwrite(filename, img)
         if name and self._wandb_logger:
-            wandb.log(
-                {
-                    name: wandb.Image(self.get_save_path(filename)),
-                    "trainer/global_step": step,
-                }
-            )
+            wandb.log({name: wandb.Image(self.get_save_path(filename)), "trainer/global_step": step})
 
-    def save_rgb_image(
-        self,
-        filename,
-        img,
-        data_format=DEFAULT_RGB_KWARGS["data_format"],
-        data_range=DEFAULT_RGB_KWARGS["data_range"],
-        name: Optional[str] = None,
-        step: Optional[int] = None,
-    ) -> str:
+    def save_rgb_image(self, filename, img, data_format=DEFAULT_RGB_KWARGS["data_format"],
+                       data_range=DEFAULT_RGB_KWARGS["data_range"], name: Optional[str] = None, step: Optional[int] = None) -> str:
         save_path = self.get_save_path(filename)
         self._save_rgb_image(save_path, img, data_format, data_range, name, step)
         return save_path
 
     def get_uv_image_(self, img, data_format, data_range, cmap):
+        """ 获取UV贴图. """
         img = self.convert_data(img)
+        # 转换格式.
         assert data_format in ["CHW", "HWC"]
-        if data_format == "CHW":
-            img = img.transpose(1, 2, 0)
+        if data_format == "CHW": img = img.transpose(1, 2, 0)
+        # 归一化.
         img = img.clip(min=data_range[0], max=data_range[1])
         img = (img - data_range[0]) / (data_range[1] - data_range[0])
+        # --------------------------------------------------------------------------------------------------------------
+        # 创建图像.
+        # --------------------------------------------------------------------------------------------------------------
         assert cmap in ["checkerboard", "color"]
         if cmap == "checkerboard":
             n_grid = 64
@@ -162,31 +136,31 @@ class SaverMixin:
             img_[..., 1] = (img[..., 1] * 255).astype(np.uint8)
             img_ = cv2.cvtColor(img_, cv2.COLOR_RGB2BGR)
             img = img_
+        # Return
         return img
 
-    def save_uv_image(
-        self,
-        filename,
-        img,
-        data_format=DEFAULT_UV_KWARGS["data_format"],
-        data_range=DEFAULT_UV_KWARGS["data_range"],
-        cmap=DEFAULT_UV_KWARGS["cmap"],
-    ) -> str:
+    def save_uv_image(self, filename, img, data_format=DEFAULT_UV_KWARGS["data_format"], data_range=DEFAULT_UV_KWARGS["data_range"],
+                      cmap=DEFAULT_UV_KWARGS["cmap"]):
         save_path = self.get_save_path(filename)
         img = self.get_uv_image_(img, data_format, data_range, cmap)
         cv2.imwrite(save_path, img)
         return save_path
 
     def get_grayscale_image_(self, img, data_range, cmap):
+        # 转换为numpy.
         img = self.convert_data(img)
         img = np.nan_to_num(img)
+        # 归一化.
         if data_range is None:
             img = (img - img.min()) / (img.max() - img.min())
         else:
             img = img.clip(data_range[0], data_range[1])
             img = (img - data_range[0]) / (data_range[1] - data_range[0])
+        # --------------------------------------------------------------------------------------------------------------
+        # 生成灰度图.
+        # --------------------------------------------------------------------------------------------------------------
         assert cmap in [None, "jet", "magma", "spectral"]
-        if cmap == None:
+        if cmap is None:
             img = (img * 255.0).astype(np.uint8)
             img = np.repeat(img[..., None], 3, axis=2)
         elif cmap == "jet":
@@ -197,8 +171,7 @@ class SaverMixin:
             base = cm.get_cmap("magma")
             num_bins = 256
             colormap = LinearSegmentedColormap.from_list(
-                f"{base.name}{num_bins}", base(np.linspace(0, 1, num_bins)), num_bins
-            )(np.linspace(0, 1, num_bins))[:, :3]
+                f"{base.name}{num_bins}", base(np.linspace(0, 1, num_bins)), num_bins)(np.linspace(0, 1, num_bins))[:, :3]
             a = np.floor(img * 255.0)
             b = (a + 1).clip(max=255.0)
             f = img * 255.0 - a
@@ -209,55 +182,41 @@ class SaverMixin:
         elif cmap == "spectral":
             colormap = plt.get_cmap("Spectral")
 
-            def blend_rgba(image):
-                image = image[..., :3] * image[..., -1:] + (
-                    1.0 - image[..., -1:]
-                )  # blend A to RGB
-                return image
+            def blend_rgba(_image):
+                _image = _image[..., :3] * _image[..., -1:] + (1.0 - _image[..., -1:])  # blend A to RGB
+                return _image
 
             img = colormap(img)
             img = blend_rgba(img)
             img = (img * 255).astype(np.uint8)
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        # Return
         return img
 
-    def _save_grayscale_image(
-        self,
-        filename,
-        img,
-        data_range,
-        cmap,
-        name: Optional[str] = None,
-        step: Optional[int] = None,
-    ):
+    def _save_grayscale_image(self, filename, img, data_range, cmap, name: Optional[str] = None, step: Optional[int] = None):
         img = self.get_grayscale_image_(img, data_range, cmap)
         cv2.imwrite(filename, img)
         if name and self._wandb_logger:
-            wandb.log(
-                {
-                    name: wandb.Image(self.get_save_path(filename)),
-                    "trainer/global_step": step,
-                }
-            )
+            wandb.log({name: wandb.Image(self.get_save_path(filename)), "trainer/global_step": step})
 
-    def save_grayscale_image(
-        self,
-        filename,
-        img,
-        data_range=DEFAULT_GRAYSCALE_KWARGS["data_range"],
-        cmap=DEFAULT_GRAYSCALE_KWARGS["cmap"],
-        name: Optional[str] = None,
-        step: Optional[int] = None,
-    ) -> str:
+    def save_grayscale_image(self, filename, img, data_range=DEFAULT_GRAYSCALE_KWARGS["data_range"], cmap=DEFAULT_GRAYSCALE_KWARGS["cmap"],
+                             name: Optional[str] = None, step: Optional[int] = None):
         save_path = self.get_save_path(filename)
         self._save_grayscale_image(save_path, img, data_range, cmap, name, step)
         return save_path
 
     def get_image_grid_(self, imgs, align):
+        """ 将图片拼接在一起.
+        :param imgs:
+        :param align:
+        :return
+        """
+        """ 递归处理每一行. """
         if isinstance(imgs[0], list):
-            return np.concatenate(
-                [self.get_image_grid_(row, align) for row in imgs], axis=0
-            )
+            return np.concatenate([self.get_image_grid_(row, align) for row in imgs], axis=0)
+        # --------------------------------------------------------------------------------------------------------------
+        # 处理每一列.
+        # --------------------------------------------------------------------------------------------------------------
         cols = []
         for col in imgs:
             assert col["type"] in ["rgb", "uv", "grayscale"]
@@ -274,6 +233,7 @@ class SaverMixin:
                 grayscale_kwargs.update(col["kwargs"])
                 cols.append(self.get_grayscale_image_(col["img"], **grayscale_kwargs))
 
+        # 根据对齐方法获取图像尺寸.
         if align == "max":
             h = max([col.shape[0] for col in cols])
             w = max([col.shape[1] for col in cols])
@@ -283,32 +243,37 @@ class SaverMixin:
         elif isinstance(align, int):
             h = align
             w = align
-        elif (
-            isinstance(align, tuple)
-            and isinstance(align[0], int)
-            and isinstance(align[1], int)
-        ):
+        elif isinstance(align, tuple) and isinstance(align[0], int) and isinstance(align[1], int):
             h, w = align
         else:
-            raise ValueError(
-                f"Unsupported image grid align: {align}, should be min, max, int or (int, int)"
-            )
+            raise ValueError(f"Unsupported image grid align: {align}, should be min, max, int or (int, int)")
 
+        # --------------------------------------------------------------------------------------------------------------
+        # 在列上拼接
+        # --------------------------------------------------------------------------------------------------------------
         for i in range(len(cols)):
             if cols[i].shape[0] != h or cols[i].shape[1] != w:
                 cols[i] = cv2.resize(cols[i], (w, h), interpolation=cv2.INTER_LINEAR)
-        return np.concatenate(cols, axis=1)
+        ret = np.concatenate(cols, axis=1)
+        # Return
+        return ret
 
     def save_image_grid(
-        self,
-        filename,
-        imgs,
-        align=DEFAULT_GRID_KWARGS["align"],
-        name: Optional[str] = None,
-        step: Optional[int] = None,
-        texts: Optional[List[float]] = None,
-    ):
+        self, filename, imgs, align=DEFAULT_GRID_KWARGS["align"], name: Optional[str] = None, step: Optional[int] = None,
+        texts: Optional[List[float]] = None):
+        """
+        :param filename: str. E.g., it200-0.png
+        :param imgs: List of [dict] or dict. 外层列表对应列，内层列表对应行. E.g.,
+            - 'type': 'rgb', 'img': (512, 512, 3), 'kwargs': { 'data_format': 'HWC' }
+            - 'type': 'rgb', 'img': (512, 512, 3), 'kwargs': { 'data_format': 'HWC', 'data_range': (0, 1)}
+            - 'type': 'grayscale', 'img': (512, 512), 'kwargs': { 'cmap': None, 'data_range': (0, 1) }
+        :param align: str. E.g., 'max'.
+        :param name: str. E.g., 'validation_step'.
+        :param self:
+        :param texts: None
+        """
         save_path = self.get_save_path(filename)
+        # (512, n*512, 3).
         img = self.get_image_grid_(imgs, align=align)
 
         if texts is not None:

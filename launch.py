@@ -148,13 +148,18 @@ def main(args, extras) -> None:
     ####################################################################################################################
 
     logger = logging.getLogger("pytorch_lightning")
+    # logger = logging.getLogger("lightning_fabric")
     if args.verbose:
         logger.setLevel(logging.DEBUG)
+
+    # file_handler = logging.FileHandler('my_log.log')
+    # file_handler.setFormatter(logging.Formatter("%(levelname)s %(asctime)s - %(message)s"))
+    # logger.handlers.insert(0, file_handler)
 
     for handler in logger.handlers:
         if handler.stream == sys.stderr:  # type: ignore
             if not args.gradio:
-                handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+                handler.setFormatter(logging.Formatter("%(levelname)s %(asctime)s - %(message)s"))
                 handler.addFilter(ColoredFilter())
             else:
                 handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
@@ -201,7 +206,7 @@ def main(args, extras) -> None:
         if args.gradio:
             callbacks += [ProgressCallback(save_path=os.path.join(cfg.trial_dir, "progress"))]
         else:
-            callbacks += [CustomProgressBar(refresh_rate=1)]
+            callbacks += [CustomProgressBar(total=cfg.trainer.max_steps, desc=cfg.name)]
     ####################################################################################################################
 
     def write_to_text(file, lines):

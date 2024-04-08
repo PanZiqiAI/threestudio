@@ -1,4 +1,5 @@
 import os
+import time
 import shutil
 import subprocess
 
@@ -111,6 +112,36 @@ class ConfigSnapshotCallback(VersionedCallback):
 
 
 class CustomProgressBar(TQDMProgressBar):
+    def __init__(self, total, desc):
+        super().__init__()
+        self._total, self._desc = total, desc
+        self._resumed_state = {}
+
+    def on_save_checkpoint(self, trainer, pl_module, checkpoint):
+        """ 获取要保存的参数. """
+        dict_to_save = {'train': {
+            'elapsed': time.time() - self.train_progress_bar.start_t,
+            'n': self.train_progress_bar.n, 'last_print_n': self.train_progress_bar.last_print_n}}
+        """ 保存. """
+        checkpoint['callbacks']['CustomProgressBar'] = dict_to_save
+
+    def on_load_checkpoint(self, trainer, pl_module, checkpoint):
+        """ 恢复进度条状态. """
+        self._resumed_state = checkpoint['callbacks']['CustomProgressBar']
+
+    def on_train_start(self, *_):
+        super().on_train_start(*_)
+        self.train_progress_bar.reset(total=self._total)
+        """ 重设. """
+        if 'train' in self._resumed_state:
+            self.train_progress_bar.start_t = time.time() - self._resumed_state['train']['elapsed']
+            self.train_progress_bar.n = self._resumed_state['train']['n']
+            self.train_progress_bar.last_print_n = self._resumed_state['train']['last_print_n']
+
+    def on_train_epoch_start(self, trainer, *_):
+        super().on_train_epoch_start(trainer, *_)
+        self.train_progress_bar.set_description(f"[{self._desc}][{self.train_progress_bar.desc[:-2]}]")
+
     def get_metrics(self, *args, **kwargs):
         # don't show the version number
         items = super().get_metrics(*args, **kwargs)

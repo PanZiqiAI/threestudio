@@ -329,7 +329,7 @@ class PromptProcessor(BaseObject):
             prompts_to_process.append(prompt)
 
         if len(prompts_to_process) > 0:
-            if self.cfg.spawn:
+            if False:#self.cfg.spawn:
                 ctx = mp.get_context("spawn")
                 subprocess = ctx.Process(
                     target=self.spawn_func, args=(self.cfg.pretrained_model_name_or_path, prompts_to_process, self._cache_dir))

@@ -129,44 +129,13 @@ class DreamFusion(BaseLift3DSystem):
 
     def test_step(self, batch, batch_idx):
         out = self(batch)
+        imgs = [{"type": "rgb", "img": out["comp_rgb"][0], "kwargs": {"data_format": "HWC"}}]
+        if "comp_normal" in out: imgs.append({"type": "rgb", "img": out["comp_normal"][0], "kwargs": {"data_format": "HWC", "data_range": (0, 1)}})
+        imgs.append({"type": "grayscale", "img": out["opacity"][0, :, :, 0], "kwargs": {"cmap": None, "data_range": (0, 1)}})
         self.save_image_grid(
-            f"it{self.true_global_step}-test/{batch['index'][0]}.png",
-            [
-                {
-                    "type": "rgb",
-                    "img": out["comp_rgb"][0],
-                    "kwargs": {"data_format": "HWC"},
-                },
-            ]
-            + (
-                [
-                    {
-                        "type": "rgb",
-                        "img": out["comp_normal"][0],
-                        "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
-                    }
-                ]
-                if "comp_normal" in out
-                else []
-            )
-            + [
-                {
-                    "type": "grayscale",
-                    "img": out["opacity"][0, :, :, 0],
-                    "kwargs": {"cmap": None, "data_range": (0, 1)},
-                },
-            ],
-            name="test_step",
-            step=self.true_global_step,
-        )
+            f"it{self.true_global_step}-test/{batch['index'][0]}.png", imgs, name="test_step", step=self.true_global_step)
 
     def on_test_epoch_end(self):
         self.save_img_sequence(
-            f"it{self.true_global_step}-test",
-            f"it{self.true_global_step}-test",
-            "(\d+)\.png",
-            save_format="mp4",
-            fps=30,
-            name="test",
-            step=self.true_global_step,
-        )
+            f"it{self.true_global_step}-test", f"it{self.true_global_step}-test", "(\d+)\.png",
+            save_format="mp4", fps=30, name="test", step=self.true_global_step)

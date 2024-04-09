@@ -358,26 +358,15 @@ class SaverMixin:
         torch.save(data, save_path)
         return save_path
 
-    def save_img_sequence(
-        self,
-        filename,
-        img_dir,
-        matcher,
-        save_format="mp4",
-        fps=30,
-        name: Optional[str] = None,
-        step: Optional[int] = None,
-    ) -> str:
+    def save_img_sequence(self, filename, img_dir, matcher, save_format="mp4", fps=30, name: Optional[str] = None, step: Optional[int] = None) -> str:
         assert save_format in ["gif", "mp4"]
-        if not filename.endswith(save_format):
-            filename += f".{save_format}"
+        if not filename.endswith(save_format): filename += f".{save_format}"
         save_path = self.get_save_path(filename)
         matcher = re.compile(matcher)
         img_dir = os.path.join(self.get_save_dir(), img_dir)
         imgs = []
         for f in os.listdir(img_dir):
-            if matcher.search(f):
-                imgs.append(f)
+            if matcher.search(f): imgs.append(f)
         imgs = sorted(imgs, key=lambda f: int(matcher.search(f).groups()[0]))
         imgs = [cv2.imread(os.path.join(img_dir, f)) for f in imgs]
 
@@ -388,12 +377,7 @@ class SaverMixin:
             imgs = [cv2.cvtColor(i, cv2.COLOR_BGR2RGB) for i in imgs]
             imageio.mimsave(save_path, imgs, fps=fps)
         if name and self._wandb_logger:
-            wandb.log(
-                {
-                    name: wandb.Video(save_path, format="mp4"),
-                    "trainer/global_step": step,
-                }
-            )
+            wandb.log({name: wandb.Video(save_path, format="mp4"), "trainer/global_step": step})
         return save_path
 
     def save_mesh(self, filename, v_pos, t_pos_idx, v_tex=None, t_tex_idx=None) -> str:

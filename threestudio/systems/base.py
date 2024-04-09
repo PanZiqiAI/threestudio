@@ -1,3 +1,4 @@
+
 import os
 from dataclasses import dataclass, field
 
@@ -132,15 +133,9 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
     """ 构建优化器（学习率调度器） """
     def configure_optimizers(self):
         optim = parse_optimizer(self.cfg.optimizer, self)
-        ret = {
-            "optimizer": optim,
-        }
+        ret = {"optimizer": optim}
         if self.cfg.scheduler is not None:
-            ret.update(
-                {
-                    "lr_scheduler": parse_scheduler(self.cfg.scheduler, optim),
-                }
-            )
+            ret.update({"lr_scheduler": parse_scheduler(self.cfg.scheduler, optim)})
         return ret
 
     def preprocess_data(self, batch, stage):
@@ -216,9 +211,7 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
 
     def on_test_batch_end(self, outputs, batch, batch_idx):
         self.dataset = self.trainer.test_dataloaders.dataset
-        update_end_if_possible(
-            self.dataset, self.true_current_epoch, self.true_global_step
-        )
+        update_end_if_possible(self.dataset, self.true_current_epoch, self.true_global_step)
         self.do_update_step_end(self.true_current_epoch, self.true_global_step)
         if self.cfg.cleanup_after_test_step:
             # cleanup to save vram
@@ -239,9 +232,7 @@ class BaseSystem(pl.LightningModule, Updateable, SaverMixin):
 
     def on_predict_batch_end(self, outputs, batch, batch_idx):
         self.dataset = self.trainer.predict_dataloaders.dataset
-        update_end_if_possible(
-            self.dataset, self.true_current_epoch, self.true_global_step
-        )
+        update_end_if_possible(self.dataset, self.true_current_epoch, self.true_global_step)
         self.do_update_step_end(self.true_current_epoch, self.true_global_step)
         if self.cfg.cleanup_after_test_step:
             # cleanup to save vram
@@ -328,11 +319,7 @@ class BaseLift3DSystem(BaseSystem):
         self.material = threestudio.find(self.cfg.material_type)(self.cfg.material)
         self.background = threestudio.find(self.cfg.background_type)(self.cfg.background)
         self.renderer = threestudio.find(self.cfg.renderer_type)(
-            self.cfg.renderer,
-            geometry=self.geometry,
-            material=self.material,
-            background=self.background,
-        )
+            self.cfg.renderer, geometry=self.geometry, material=self.material, background=self.background)
 
     ####################################################################################################################
     # Pytorch Lightning 接口.
@@ -346,9 +333,7 @@ class BaseLift3DSystem(BaseSystem):
         if self._save_dir is not None:
             threestudio.info(f"Validation results will be saved to {self._save_dir}")
         else:
-            threestudio.warn(
-                f"Saving directory not set for the system, visualization results will not be saved"
-            )
+            threestudio.warn(f"Saving directory not set for the system, visualization results will not be saved")
 
     # ------------------------------------------------------------------------------------------------------------------
     # Test.
@@ -364,11 +349,7 @@ class BaseLift3DSystem(BaseSystem):
 
     def on_predict_start(self) -> None:
         self.exporter: Exporter = threestudio.find(self.cfg.exporter_type)(
-            self.cfg.exporter,
-            geometry=self.geometry,
-            material=self.material,
-            background=self.background,
-        )
+            self.cfg.exporter, geometry=self.geometry, material=self.material, background=self.background)
 
     def predict_step(self, batch, batch_idx):
         if self.exporter.cfg.save_video:

@@ -80,7 +80,7 @@ class RandomCameraIterableDataset(IterableDataset, Updateable):
 
     def __iter__(self):
         while True:
-            yield self._get_batch_data()
+            yield self.get_batch_data()
 
     def update_step(self, epoch: int, global_step: int, on_load_weights: bool = False):
         size_ind = bisect.bisect_right([-1] + self._cargs.resolution_milestones, global_step) - 1
@@ -96,7 +96,7 @@ class RandomCameraIterableDataset(IterableDataset, Updateable):
         self._status.azimuth_range = [
             (1 - r) * 0.0 + r * self.cfg.azimuth_range[0], (1 - r) * 0.0 + r * self.cfg.azimuth_range[1]]
 
-    def _get_batch_data(self):
+    def get_batch_data(self):
         ################################################################################################################
         """ 相机位置参数. """
         ################################################################################################################

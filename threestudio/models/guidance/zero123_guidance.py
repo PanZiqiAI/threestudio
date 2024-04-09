@@ -106,11 +106,7 @@ class Zero123Guidance(BaseObject):
         # TODO: seems it cannot load into fp16...
         self.weights_dtype = torch.float32
         self.model = load_model_from_config(
-            self.config,
-            self.cfg.pretrained_model_name_or_path,
-            device=self.device,
-            vram_O=self.cfg.vram_O,
-        )
+            self.config, self.cfg.pretrained_model_name_or_path, device=self.device, vram_O=self.cfg.vram_O)
 
         for p in self.model.parameters():
             p.requires_grad_(False)
@@ -119,21 +115,13 @@ class Zero123Guidance(BaseObject):
         self.num_train_timesteps = self.config.model.params.timesteps
 
         self.scheduler = DDIMScheduler(
-            self.num_train_timesteps,
-            self.config.model.params.linear_start,
-            self.config.model.params.linear_end,
-            beta_schedule="scaled_linear",
-            clip_sample=False,
-            set_alpha_to_one=False,
-            steps_offset=1,
-        )
+            self.num_train_timesteps, self.config.model.params.linear_start, self.config.model.params.linear_end,
+            beta_schedule="scaled_linear", clip_sample=False, set_alpha_to_one=False, steps_offset=1)
 
         self.num_train_timesteps = self.scheduler.config.num_train_timesteps
         self.set_min_max_steps()  # set to default value
 
-        self.alphas: Float[Tensor, "..."] = self.scheduler.alphas_cumprod.to(
-            self.device
-        )
+        self.alphas: Float[Tensor, "..."] = self.scheduler.alphas_cumprod.to(self.device)
 
         self.grad_clip_val: Optional[float] = None
 
@@ -150,52 +138,29 @@ class Zero123Guidance(BaseObject):
     def prepare_embeddings(self, image_path: str) -> None:
         # load cond image for zero123
         assert os.path.exists(image_path)
-        rgba = cv2.cvtColor(
-            cv2.imread(image_path, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGRA2RGBA
-        )
-        rgba = (
-            cv2.resize(rgba, (256, 256), interpolation=cv2.INTER_AREA).astype(
-                np.float32
-            )
-            / 255.0
-        )
+        rgba = cv2.cvtColor(cv2.imread(image_path, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGRA2RGBA)
+        rgba = cv2.resize(rgba, (256, 256), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
         rgb = rgba[..., :3] * rgba[..., 3:] + (1 - rgba[..., 3:])
-        self.rgb_256: Float[Tensor, "1 3 H W"] = (
-            torch.from_numpy(rgb)
-            .unsqueeze(0)
-            .permute(0, 3, 1, 2)
-            .contiguous()
-            .to(self.device)
-        )
+        self.rgb_256: Float[Tensor, "1 3 H W"] = torch.from_numpy(rgb).unsqueeze(0).permute(0, 3, 1, 2).contiguous().to(self.device)
         self.c_crossattn, self.c_concat = self.get_img_embeds(self.rgb_256)
 
     @torch.cuda.amp.autocast(enabled=False)
     @torch.no_grad()
-    def get_img_embeds(
-        self,
-        img: Float[Tensor, "B 3 256 256"],
-    ) -> Tuple[Float[Tensor, "B 1 768"], Float[Tensor, "B 4 32 32"]]:
+    def get_img_embeds(self, img: Float[Tensor, "B 3 256 256"]) -> Tuple[Float[Tensor, "B 1 768"], Float[Tensor, "B 4 32 32"]]:
         img = img * 2.0 - 1.0
         c_crossattn = self.model.get_learned_conditioning(img.to(self.weights_dtype))
         c_concat = self.model.encode_first_stage(img.to(self.weights_dtype)).mode()
         return c_crossattn, c_concat
 
     @torch.cuda.amp.autocast(enabled=False)
-    def encode_images(
-        self, imgs: Float[Tensor, "B 3 256 256"]
-    ) -> Float[Tensor, "B 4 32 32"]:
+    def encode_images(self, imgs: Float[Tensor, "B 3 256 256"]) -> Float[Tensor, "B 4 32 32"]:
         input_dtype = imgs.dtype
         imgs = imgs * 2.0 - 1.0
-        latents = self.model.get_first_stage_encoding(
-            self.model.encode_first_stage(imgs.to(self.weights_dtype))
-        )
+        latents = self.model.get_first_stage_encoding(self.model.encode_first_stage(imgs.to(self.weights_dtype)))
         return latents.to(input_dtype)  # [B, 4, 32, 32] Latent space image
 
     @torch.cuda.amp.autocast(enabled=False)
-    def decode_latents(
-        self,
-        latents: Float[Tensor, "B 4 H W"],
-    ) -> Float[Tensor, "B 3 512 512"]:
+    def decode_latents(self, latents: Float[Tensor, "B 4 H W"]) -> Float[Tensor, "B 3 512 512"]:
         input_dtype = latents.dtype
         image = self.model.decode_first_stage(latents)
         image = (image * 0.5 + 0.5).clamp(0, 1)
@@ -203,93 +168,38 @@ class Zero123Guidance(BaseObject):
 
     @torch.cuda.amp.autocast(enabled=False)
     @torch.no_grad()
-    def get_cond(
-        self,
-        elevation: Float[Tensor, "B"],
-        azimuth: Float[Tensor, "B"],
-        camera_distances: Float[Tensor, "B"],
-        c_crossattn=None,
-        c_concat=None,
-        **kwargs,
-    ) -> dict:
-        T = torch.stack(
-            [
-                torch.deg2rad(
-                    (90 - elevation) - (90 - self.cfg.cond_elevation_deg)
-                ),  # Zero123 polar is 90-elevation
-                torch.sin(torch.deg2rad(azimuth - self.cfg.cond_azimuth_deg)),
-                torch.cos(torch.deg2rad(azimuth - self.cfg.cond_azimuth_deg)),
-                camera_distances - self.cfg.cond_camera_distance,
-            ],
-            dim=-1,
-        )[:, None, :].to(self.device)
+    def get_cond(self, elevation: Float[Tensor, "B"], azimuth: Float[Tensor, "B"], camera_distances: Float[Tensor, "B"], c_crossattn=None, c_concat=None, **kwargs) -> dict:
+        T = torch.stack([
+            torch.deg2rad((90 - elevation) - (90 - self.cfg.cond_elevation_deg)),  # Zero123 polar is 90-elevation
+            torch.sin(torch.deg2rad(azimuth - self.cfg.cond_azimuth_deg)),
+            torch.cos(torch.deg2rad(azimuth - self.cfg.cond_azimuth_deg)),
+            camera_distances - self.cfg.cond_camera_distance], dim=-1)[:, None, :].to(self.device)
         cond = {}
         clip_emb = self.model.cc_projection(
-            torch.cat(
-                [
-                    (self.c_crossattn if c_crossattn is None else c_crossattn).repeat(
-                        len(T), 1, 1
-                    ),
-                    T,
-                ],
-                dim=-1,
-            )
-        )
-        cond["c_crossattn"] = [
-            torch.cat([torch.zeros_like(clip_emb).to(self.device), clip_emb], dim=0)
-        ]
-        cond["c_concat"] = [
-            torch.cat(
-                [
-                    torch.zeros_like(self.c_concat)
-                    .repeat(len(T), 1, 1, 1)
-                    .to(self.device),
-                    (self.c_concat if c_concat is None else c_concat).repeat(
-                        len(T), 1, 1, 1
-                    ),
-                ],
-                dim=0,
-            )
-        ]
+            torch.cat([(self.c_crossattn if c_crossattn is None else c_crossattn).repeat(len(T), 1, 1), T], dim=-1))
+        cond["c_crossattn"] = [torch.cat([torch.zeros_like(clip_emb).to(self.device), clip_emb], dim=0)]
+        cond["c_concat"] = [torch.cat([
+            torch.zeros_like(self.c_concat).repeat(len(T), 1, 1, 1).to(self.device),
+            (self.c_concat if c_concat is None else c_concat).repeat(len(T), 1, 1, 1)], dim=0)]
         return cond
 
-    def __call__(
-        self,
-        rgb: Float[Tensor, "B H W C"],
-        elevation: Float[Tensor, "B"],
-        azimuth: Float[Tensor, "B"],
-        camera_distances: Float[Tensor, "B"],
-        rgb_as_latents=False,
-        guidance_eval=False,
-        **kwargs,
-    ):
+    def __call__(self, rgb: Float[Tensor, "B H W C"], elevation: Float[Tensor, "B"], azimuth: Float[Tensor, "B"],
+                 camera_distances: Float[Tensor, "B"], rgb_as_latents=False, guidance_eval=False, **kwargs):
         batch_size = rgb.shape[0]
 
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
         latents: Float[Tensor, "B 4 64 64"]
         if rgb_as_latents:
-            latents = (
-                F.interpolate(rgb_BCHW, (32, 32), mode="bilinear", align_corners=False)
-                * 2
-                - 1
-            )
+            latents = F.interpolate(rgb_BCHW, (32, 32), mode="bilinear", align_corners=False)* 2 - 1
         else:
-            rgb_BCHW_512 = F.interpolate(
-                rgb_BCHW, (256, 256), mode="bilinear", align_corners=False
-            )
+            rgb_BCHW_512 = F.interpolate(rgb_BCHW, (256, 256), mode="bilinear", align_corners=False)
             # encode image into latents with vae
             latents = self.encode_images(rgb_BCHW_512)
 
         cond = self.get_cond(elevation, azimuth, camera_distances)
 
         # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
-        t = torch.randint(
-            self.min_step,
-            self.max_step + 1,
-            [batch_size],
-            dtype=torch.long,
-            device=self.device,
-        )
+        t = torch.randint(self.min_step, self.max_step + 1, [batch_size], dtype=torch.long, device=self.device)
 
         # predict the noise residual with unet, NO grad!
         with torch.no_grad():
@@ -303,9 +213,7 @@ class Zero123Guidance(BaseObject):
 
         # perform guidance
         noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
-        noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (
-            noise_pred_cond - noise_pred_uncond
-        )
+        noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (noise_pred_cond - noise_pred_uncond)
 
         w = (1 - self.alphas[t]).reshape(-1, 1, 1, 1)
         grad = w * (noise_pred - noise)
@@ -320,28 +228,14 @@ class Zero123Guidance(BaseObject):
         # d(loss)/d(latents) = latents - target = latents - (latents - grad) = grad
         loss_sds = 0.5 * F.mse_loss(latents, target, reduction="sum") / batch_size
 
-        guidance_out = {
-            "loss_sds": loss_sds,
-            "grad_norm": grad.norm(),
-            "min_step": self.min_step,
-            "max_step": self.max_step,
-        }
+        guidance_out = {"loss_sds": loss_sds, "grad_norm": grad.norm(), "min_step": self.min_step, "max_step": self.max_step}
 
         if guidance_eval:
-            guidance_eval_utils = {
-                "cond": cond,
-                "t_orig": t,
-                "latents_noisy": latents_noisy,
-                "noise_pred": noise_pred,
-            }
+            guidance_eval_utils = {"cond": cond, "t_orig": t, "latents_noisy": latents_noisy, "noise_pred": noise_pred}
             guidance_eval_out = self.guidance_eval(**guidance_eval_utils)
             texts = []
-            for n, e, a, c in zip(
-                guidance_eval_out["noise_levels"], elevation, azimuth, camera_distances
-            ):
-                texts.append(
-                    f"n{n:.02f}\ne{e.item():.01f}\na{a.item():.01f}\nc{c.item():.02f}"
-                )
+            for n, e, a, c in zip(guidance_eval_out["noise_levels"], elevation, azimuth, camera_distances):
+                texts.append(f"n{n:.02f}\ne{e.item():.01f}\na{a.item():.01f}\nc{c.item():.02f}")
             guidance_eval_out.update({"texts": texts})
             guidance_out.update({"eval": guidance_eval_out})
 
@@ -432,40 +326,17 @@ class Zero123Guidance(BaseObject):
 
     # verification - requires `vram_O = False` in load_model_from_config
     @torch.no_grad()
-    def generate(
-        self,
-        image,  # image tensor [1, 3, H, W] in [0, 1]
-        elevation=0,
-        azimuth=0,
-        camera_distances=0,  # new view params
-        c_crossattn=None,
-        c_concat=None,
-        scale=3,
-        ddim_steps=50,
-        post_process=True,
-        ddim_eta=1,
-    ):
+    def generate(self, image, elevation=0, azimuth=0, camera_distances=0,  c_crossattn=None, c_concat=None, scale=3,
+                 ddim_steps=50, post_process=True, ddim_eta=1):
         if c_crossattn is None:
             c_crossattn, c_concat = self.get_img_embeds(image)
-
-        cond = self.get_cond(
-            elevation, azimuth, camera_distances, c_crossattn, c_concat
-        )
-
+        cond = self.get_cond(elevation, azimuth, camera_distances, c_crossattn, c_concat)
         imgs = self.gen_from_cond(cond, scale, ddim_steps, post_process, ddim_eta)
-
         return imgs
 
     # verification - requires `vram_O = False` in load_model_from_config
     @torch.no_grad()
-    def gen_from_cond(
-        self,
-        cond,
-        scale=3,
-        ddim_steps=50,
-        post_process=True,
-        ddim_eta=1,
-    ):
+    def gen_from_cond(self, cond, scale=3, ddim_steps=50, post_process=True, ddim_eta=1):
         # produce latents loop
         B = cond["c_crossattn"][0].shape[0] // 2
         latents = torch.randn((B, 4, 32, 32), device=self.device)
@@ -477,13 +348,9 @@ class Zero123Guidance(BaseObject):
 
             noise_pred = self.model.apply_model(x_in, t_in, cond)
             noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + scale * (
-                noise_pred_cond - noise_pred_uncond
-            )
+            noise_pred = noise_pred_uncond + scale * (noise_pred_cond - noise_pred_uncond)
 
-            latents = self.scheduler.step(noise_pred, t, latents, eta=ddim_eta)[
-                "prev_sample"
-            ]
+            latents = self.scheduler.step(noise_pred, t, latents, eta=ddim_eta)["prev_sample"]
 
         imgs = self.decode_latents(latents)
         imgs = imgs.cpu().numpy().transpose(0, 2, 3, 1) if post_process else imgs

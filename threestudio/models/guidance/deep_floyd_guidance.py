@@ -226,27 +226,21 @@ class DeepFloydGuidance(BaseObject):
 
     @torch.cuda.amp.autocast(enabled=False)
     @torch.no_grad()
-    def get_noise_pred(
-        self,
-        latents_noisy,
-        t,
-        text_embeddings,
-        use_perp_neg=False,
-        neg_guidance_weights=None,
-    ):
+    def get_noise_pred(self, latents_noisy, t, text_embeddings, use_perp_neg=False, neg_guidance_weights=None):
+        """
+        :param latents_noisy: (1, 3, 64, 64).
+        :param t: (, ).
+        :param text_embeddings: (2或4, 77, 4096).
+        :param use_perp_neg:
+        :param neg_guidance_weights: (1, 2).
+        """
         batch_size = latents_noisy.shape[0]
         if use_perp_neg:
             latent_model_input = torch.cat([latents_noisy] * 4, dim=0)
             noise_pred = self.forward_unet(
-                latent_model_input,
-                torch.cat([t.reshape(1)] * 4).to(self.device),
-                encoder_hidden_states=text_embeddings,
-            )  # (4B, 6, 64, 64)
-
+                latent_model_input, torch.cat([t.reshape(1)] * 4).to(self.device), encoder_hidden_states=text_embeddings)  # (4B, 6, 64, 64)
             noise_pred_text, _ = noise_pred[:batch_size].split(3, dim=1)
-            noise_pred_uncond, _ = noise_pred[batch_size : batch_size * 2].split(
-                3, dim=1
-            )
+            noise_pred_uncond, _ = noise_pred[batch_size : batch_size * 2].split(3, dim=1)
             noise_pred_neg, _ = noise_pred[batch_size * 2 :].split(3, dim=1)
 
             e_pos = noise_pred_text - noise_pred_uncond
@@ -254,68 +248,58 @@ class DeepFloydGuidance(BaseObject):
             n_negative_prompts = neg_guidance_weights.shape[-1]
             for i in range(n_negative_prompts):
                 e_i_neg = noise_pred_neg[i::n_negative_prompts] - noise_pred_uncond
-                accum_grad += neg_guidance_weights[:, i].view(
-                    -1, 1, 1, 1
-                ) * perpendicular_component(e_i_neg, e_pos)
-
-            noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (
-                e_pos + accum_grad
-            )
+                accum_grad += neg_guidance_weights[:, i].view(-1, 1, 1, 1) * perpendicular_component(e_i_neg, e_pos)
+            noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (e_pos + accum_grad)
         else:
             latent_model_input = torch.cat([latents_noisy] * 2, dim=0)
             noise_pred = self.forward_unet(
-                latent_model_input,
-                torch.cat([t.reshape(1)] * 2).to(self.device),
-                encoder_hidden_states=text_embeddings,
-            )  # (2B, 6, 64, 64)
-
+                latent_model_input, torch.cat([t.reshape(1)] * 2).to(self.device), encoder_hidden_states=text_embeddings)  # (2B, 6, 64, 64)
             # perform guidance (high scale from paper!)
             noise_pred_text, noise_pred_uncond = noise_pred.chunk(2)
             noise_pred_text, predicted_variance = noise_pred_text.split(3, dim=1)
             noise_pred_uncond, _ = noise_pred_uncond.split(3, dim=1)
-            noise_pred = noise_pred_text + self.cfg.guidance_scale * (
-                noise_pred_text - noise_pred_uncond
-            )
+            noise_pred = noise_pred_text + self.cfg.guidance_scale * (noise_pred_text - noise_pred_uncond)
 
         return torch.cat([noise_pred, predicted_variance], dim=1)
 
     @torch.cuda.amp.autocast(enabled=False)
     @torch.no_grad()
-    def guidance_eval(
-        self,
-        t_orig,
-        text_embeddings,
-        latents_noisy,
-        noise_pred,
-        use_perp_neg=False,
-        neg_guidance_weights=None,
-    ):
-        # use only 50 timesteps, and find nearest of those to t
+    def guidance_eval(self, t_orig, text_embeddings, latents_noisy, noise_pred, use_perp_neg=False, neg_guidance_weights=None):
+        """
+        :param t_orig: (batch, ). torch@long. 时间步.
+        :param text_embeddings: (2或4*batch, 77, 4096)，其中N对应pos/uncond(/neg1/neg2)
+        :param latents_noisy: (batch, 3, 64, 64). 加噪后的latents.
+        :param noise_pred: (batch, 6, 64, 64). 最终预测噪音（融合正负后） + 预测方差.
+        :param use_perp_neg:
+        :param neg_guidance_weights: None or (batch, N-2). 对应于neg1/neg2
+        """
+        bs = min(self.cfg.max_items_eval, latents_noisy.shape[0]) if self.cfg.max_items_eval > 0 else latents_noisy.shape[0]
+
+        # --------------------------------------------------------------------------------------------------------------
+        # 设置时间步：use only 50 timesteps
+        # --------------------------------------------------------------------------------------------------------------
         self.scheduler.set_timesteps(50)
-        self.scheduler.timesteps_gpu = self.scheduler.timesteps.to(self.device)
-        bs = (
-            min(self.cfg.max_items_eval, latents_noisy.shape[0])
-            if self.cfg.max_items_eval > 0
-            else latents_noisy.shape[0]
-        )  # batch size
-        large_enough_idxs = self.scheduler.timesteps_gpu.expand([bs, -1]) > t_orig[
-            :bs
-        ].unsqueeze(
-            -1
-        )  # sized [bs,50] > [bs,1]
-        idxs = torch.min(large_enough_idxs, dim=1)[1]
+        self.scheduler.timesteps_gpu = self.scheduler.timesteps.to(self.device) # 均等分1000到0,有50个数据 (间隔为20).
+        # --------------------------------------------------------------------------------------------------------------
+        # 找到小于且最接近于t_orig的timestep. (batch, ).
+        # --------------------------------------------------------------------------------------------------------------
+        # (batch, 50). 表明每一个timestep是否大于t_orig.
+        large_enough_idxs = self.scheduler.timesteps_gpu.expand([bs, -1]) > t_orig[:bs].unsqueeze(-1)  # sized [bs,50] > [bs,1]
+        idxs = torch.min(large_enough_idxs, dim=1).indices
+        # (batch, ). 找到小于且最接近于t_orig的timestep.
         t = self.scheduler.timesteps_gpu[idxs]
+        """ 计算fraction. """
+        frac = list((t / self.scheduler.config.num_train_timesteps).cpu().numpy())
 
-        fracs = list((t / self.scheduler.config.num_train_timesteps).cpu().numpy())
-        imgs_noisy = (latents_noisy[:bs] / 2 + 0.5).permute(0, 2, 3, 1)
-
-        # get prev latent
-        latents_1step = []
-        pred_1orig = []
+        # --------------------------------------------------------------------------------------------------------------
+        # 获取imgs_1step & imgs_1orig. (batch, 3, 64, 64).
+        """
+        @imgs_1step: 最接近的上一个timestep的去噪结果.
+        @imgs_1orig: 根据预测噪音推断的原始图像（对应于t0时间步）. """
+        # --------------------------------------------------------------------------------------------------------------
+        latents_1step, pred_1orig = [], []
         for b in range(bs):
-            step_output = self.scheduler.step(
-                noise_pred[b : b + 1], t[b], latents_noisy[b : b + 1]
-            )
+            step_output = self.scheduler.step(noise_pred[b:b + 1], t[b], latents_noisy[b:b + 1])
             latents_1step.append(step_output["prev_sample"])
             pred_1orig.append(step_output["pred_original_sample"])
         latents_1step = torch.cat(latents_1step)
@@ -323,33 +307,29 @@ class DeepFloydGuidance(BaseObject):
         imgs_1step = (latents_1step / 2 + 0.5).permute(0, 2, 3, 1)
         imgs_1orig = (pred_1orig / 2 + 0.5).permute(0, 2, 3, 1)
 
+        # --------------------------------------------------------------------------------------------------------------
+        # 获取逐步去噪的最终去噪结果. (batch, 3, 64, 64). 
+        # --------------------------------------------------------------------------------------------------------------
         latents_final = []
         for b, i in enumerate(idxs):
-            latents = latents_1step[b : b + 1]
-            text_emb = (
-                text_embeddings[
-                    [b, b + len(idxs), b + 2 * len(idxs), b + 3 * len(idxs)], ...
-                ]
-                if use_perp_neg
-                else text_embeddings[[b, b + len(idxs)], ...]
-            )
-            neg_guid = neg_guidance_weights[b : b + 1] if use_perp_neg else None
-            for t in tqdm(self.scheduler.timesteps[i + 1 :], leave=False):
+            # (1, 3, 64, 64). 当前样本的上一个timestep的去噪结果.
+            latents = latents_1step[b:b+1]
+            # (4或2, 77, 4096)       todo: 应该是2*len(idxs)+2b, 2*len(idxs)+2b+1
+            text_emb = text_embeddings[[b, b+len(idxs), b+2*len(idxs), b+3*len(idxs)], ...] \
+                if use_perp_neg else text_embeddings[[b, b+len(idxs)], ...]
+            neg_guid = neg_guidance_weights[b:b+1] if use_perp_neg else None
+            for t in tqdm(self.scheduler.timesteps[i+1:], leave=False):
                 # pred noise
-                noise_pred = self.get_noise_pred(
-                    latents, t, text_emb, use_perp_neg, neg_guid
-                )
+                noise_pred = self.get_noise_pred(latents, t, text_emb, use_perp_neg, neg_guid)
                 # get prev latent
                 latents = self.scheduler.step(noise_pred, t, latents)["prev_sample"]
             latents_final.append(latents)
-
         latents_final = torch.cat(latents_final)
         imgs_final = (latents_final / 2 + 0.5).permute(0, 2, 3, 1)
 
         return {
-            "bs": bs,
-            "noise_levels": fracs,
-            "imgs_noisy": imgs_noisy,
+            "noise_levels": frac,
+            "imgs_noisy": (latents_noisy[:bs] / 2 + 0.5).permute(0, 2, 3, 1),
             "imgs_1step": imgs_1step,
             "imgs_1orig": imgs_1orig,
             "imgs_final": imgs_final,

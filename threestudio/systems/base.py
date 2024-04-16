@@ -384,50 +384,9 @@ class BaseLift3DSystem(BaseSystem):
 
         self.save_image_grid(
             filename,
-            [
-                {
-                    "type": "rgb",
-                    "img": merge12(comp_rgb),
-                    "kwargs": {"data_format": "HWC"},
-                },
-            ]
-            + (
-                [
-                    {
-                        "type": "rgb",
-                        "img": merge12(resize(guidance_eval_out["imgs_noisy"])),
-                        "kwargs": {"data_format": "HWC"},
-                    }
-                ]
-            )
-            + (
-                [
-                    {
-                        "type": "rgb",
-                        "img": merge12(resize(guidance_eval_out["imgs_1step"])),
-                        "kwargs": {"data_format": "HWC"},
-                    }
-                ]
-            )
-            + (
-                [
-                    {
-                        "type": "rgb",
-                        "img": merge12(resize(guidance_eval_out["imgs_1orig"])),
-                        "kwargs": {"data_format": "HWC"},
-                    }
-                ]
-            )
-            + (
-                [
-                    {
-                        "type": "rgb",
-                        "img": merge12(resize(guidance_eval_out["imgs_final"])),
-                        "kwargs": {"data_format": "HWC"},
-                    }
-                ]
-            ),
-            name="train_step",
-            step=self.true_global_step,
-            texts=guidance_eval_out["texts"],
-        )
+            [{"type": "rgb", "img": merge12(comp_rgb), "kwargs": {"data_format": "HWC"}}] +
+            [{"type": "rgb", "img": merge12(resize(guidance_eval_out["imgs_noisy"])), "kwargs": {"data_format": "HWC"}}] +
+            [{"type": "rgb", "img": merge12(resize(guidance_eval_out["imgs_1step"])), "kwargs": {"data_format": "HWC"}}] +
+            [{"type": "rgb", "img": merge12(resize(guidance_eval_out["imgs_1orig"])), "kwargs": {"data_format": "HWC"}}] +
+            [{"type": "rgb", "img": merge12(resize(guidance_eval_out["imgs_final"])), "kwargs": {"data_format": "HWC"}}],
+            name="train_step", step=self.true_global_step, texts=guidance_eval_out["texts"])

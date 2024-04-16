@@ -67,74 +67,92 @@ class MarchingCubeCPUHelper(IsosurfaceHelper):
 
 
 class MarchingTetrahedraHelper(IsosurfaceHelper):
+    """ Marching Tetrahedra (MT) 算法.
+    @说明：这是一种用于生成等值面（isovalue surfaces）的算法，通常用于可视化三维数据集中的特定值。例如，我们可能对某个特定密度的体素感兴
+    趣，Marching Tetrahedra算法可以帮助我们找到这些体素的表面. 该算法概述如下：
+        - MT算法将三维空间划分为一系列四面体（tetrahedra）；
+        - 输入可以是点云或粗体素数据，然后生成一个包围输入数据的立方体；
+        - 然后，将这个立方体网格化为一组四面体，每个四面体由4个顶点和4个面组成；
+        - 根据4个顶点的SDF（有符号距离函数）值，计算网格表面的顶点位置（使用线性插值公式计算）.
+        - 最终，可以得到网格表面.
+    """
     def __init__(self, resolution: int, tets_path: str):
         super().__init__()
         self.resolution = resolution
         self.tets_path = tets_path
 
+        # --------------------------------------------------------------------------------------------------------------
+        # triangle_table. (16, 6).
+        # todo：关于每一行6个值的解释，还需要进一步研究.
+        """ @说明：在MT算法中，需要判断哪些四面体与物体的的表面相交，以便提取出网格表面，这就是"triangle table"发挥作用的地方. 一个四
+        面体有4个顶点，每个顶点可能在物体表面的内部或外部，因此，总共可能有2^4=16种可能的情况（表的每行对应于一个情况）. 可以进一步将这
+        些情况分为三类：
+            - (1) 4个顶点都在表面内或表面外：这些四面体被丢弃；
+            - (2) 有2个顶点在表面外或表面内：这些四面体与物体表面有4个交点，可以用2个三角面片表示；
+            - (3) 有1个顶点在表面外，另外3个顶点在表面内或相反的情形：这些四面体与物体表面有3个交点，可以用1个三角面片表示.
+
+
+        对于每一行来说，它共有6个值，具体意义如下：
+            - 第1个值：表示四面体第1个顶点的状态. 若为-1,表示该顶点在表面外；若为0,表示该顶点在表面上；若为1/2/3/4/5，则表示该顶点在表
+            面内的不同区域（将四面体的内部进一步划分得到的5个子四面体）；
+            - 第2/3/4个值：表示四面体的第2/3/4个顶点的状态.
+            - 第5个值：表示四面体的第1个顶点与第2个顶点之间的边的状态. 若为-1，则表示该边不与表面相交；若为0，则表示该边与表面相交.
+            - 第6个值：表示四面体的第1个顶点与第3个顶点之间的边的状态.
+        这些值的组合决定了四面体与物体表面的交点，从而帮助我们生成精确的三维模型. """
+        # --------------------------------------------------------------------------------------------------------------
         self.triangle_table: Float[Tensor, "..."]
         self.register_buffer(
-            "triangle_table",
-            torch.as_tensor(
-                [
-                    [-1, -1, -1, -1, -1, -1],
-                    [1, 0, 2, -1, -1, -1],
-                    [4, 0, 3, -1, -1, -1],
-                    [1, 4, 2, 1, 3, 4],
-                    [3, 1, 5, -1, -1, -1],
-                    [2, 3, 0, 2, 5, 3],
-                    [1, 4, 0, 1, 5, 4],
-                    [4, 2, 5, -1, -1, -1],
-                    [4, 5, 2, -1, -1, -1],
-                    [4, 1, 0, 4, 5, 1],
-                    [3, 2, 0, 3, 5, 2],
-                    [1, 3, 5, -1, -1, -1],
-                    [4, 1, 2, 4, 3, 1],
-                    [3, 0, 4, -1, -1, -1],
-                    [2, 0, 1, -1, -1, -1],
-                    [-1, -1, -1, -1, -1, -1],
-                ],
-                dtype=torch.long,
-            ),
-            persistent=False,
-        )
-        self.num_triangles_table: Integer[Tensor, "..."]
-        self.register_buffer(
-            "num_triangles_table",
-            torch.as_tensor(
-                [0, 1, 1, 2, 1, 2, 2, 1, 1, 2, 2, 1, 2, 1, 1, 0], dtype=torch.long
-            ),
-            persistent=False,
-        )
-        self.base_tet_edges: Integer[Tensor, "..."]
-        self.register_buffer(
-            "base_tet_edges",
-            torch.as_tensor([0, 1, 0, 2, 0, 3, 1, 2, 1, 3, 2, 3], dtype=torch.long),
-            persistent=False,
-        )
+            "triangle_table", torch.as_tensor([
+                [-1, -1, -1, -1, -1, -1],
+                [1, 0, 2, -1, -1, -1],
+                [4, 0, 3, -1, -1, -1],
+                [1, 4, 2, 1, 3, 4],
+                [3, 1, 5, -1, -1, -1],
+                [2, 3, 0, 2, 5, 3],
+                [1, 4, 0, 1, 5, 4],
+                [4, 2, 5, -1, -1, -1],
+                [4, 5, 2, -1, -1, -1],
+                [4, 1, 0, 4, 5, 1],
+                [3, 2, 0, 3, 5, 2],
+                [1, 3, 5, -1, -1, -1],
+                [4, 1, 2, 4, 3, 1],
+                [3, 0, 4, -1, -1, -1],
+                [2, 0, 1, -1, -1, -1],
+                [-1, -1, -1, -1, -1, -1]], dtype=torch.long), persistent=False)
 
+        # --------------------------------------------------------------------------------------------------------------
+        # num_triangles_table. (16, ).
+        # --------------------------------------------------------------------------------------------------------------
+        self.num_triangles_table: Integer[Tensor, "..."]
+        self.register_buffer("num_triangles_table", torch.as_tensor(
+            [0, 1, 1, 2, 1, 2, 2, 1, 1, 2, 2, 1, 2, 1, 1, 0], dtype=torch.long), persistent=False)
+        # --------------------------------------------------------------------------------------------------------------
+        # base_tet_edges. (12, ).
+        # --------------------------------------------------------------------------------------------------------------
+        self.base_tet_edges: Integer[Tensor, "..."]
+        self.register_buffer("base_tet_edges", torch.as_tensor(
+            [0, 1, 0, 2, 0, 3, 1, 2, 1, 3, 2, 3], dtype=torch.long), persistent=False)
+
+        # --------------------------------------------------------------------------------------------------------------
+        # _grid_vertices. (n_vertexes, 3).
+        # --------------------------------------------------------------------------------------------------------------
         tets = np.load(self.tets_path)
         self._grid_vertices: Float[Tensor, "..."]
-        self.register_buffer(
-            "_grid_vertices",
-            torch.from_numpy(tets["vertices"]).float(),
-            persistent=False,
-        )
+        self.register_buffer("_grid_vertices", torch.from_numpy(tets["vertices"]).float(), persistent=False)
+        # --------------------------------------------------------------------------------------------------------------
+        # Indices.
+        # --------------------------------------------------------------------------------------------------------------
         self.indices: Integer[Tensor, "..."]
-        self.register_buffer(
-            "indices", torch.from_numpy(tets["indices"]).long(), persistent=False
-        )
+        self.register_buffer("indices", torch.from_numpy(tets["indices"]).long(), persistent=False)
 
+        # --------------------------------------------------------------------------------------------------------------
+        # _all_edges. (n_edges, 2).
+        # --------------------------------------------------------------------------------------------------------------
         self._all_edges: Optional[Integer[Tensor, "Ne 2"]] = None
 
-    def normalize_grid_deformation(
-        self, grid_vertex_offsets: Float[Tensor, "Nv 3"]
-    ) -> Float[Tensor, "Nv 3"]:
-        return (
-            (self.points_range[1] - self.points_range[0])
-            / (self.resolution)  # half tet size is approximately 1 / self.resolution
-            * torch.tanh(grid_vertex_offsets)
-        )  # FIXME: hard-coded activation
+    def normalize_grid_deformation(self, grid_vertex_offsets: Float[Tensor, "Nv 3"]) -> Float[Tensor, "Nv 3"]:
+        return ((self.points_range[1] - self.points_range[0]) / self.resolution  # half tet size is approximately 1 / self.resolution
+                * torch.tanh(grid_vertex_offsets))  # FIXME: hard-coded activation
 
     @property
     def grid_vertices(self) -> Float[Tensor, "Nv 3"]:
@@ -144,11 +162,7 @@ class MarchingTetrahedraHelper(IsosurfaceHelper):
     def all_edges(self) -> Integer[Tensor, "Ne 2"]:
         if self._all_edges is None:
             # compute edges on GPU, or it would be VERY SLOW (basically due to the unique operation)
-            edges = torch.tensor(
-                [0, 1, 0, 2, 0, 3, 1, 2, 1, 3, 2, 3],
-                dtype=torch.long,
-                device=self.indices.device,
-            )
+            edges = torch.tensor([0, 1, 0, 2, 0, 3, 1, 2, 1, 3, 2, 3], dtype=torch.long, device=self.indices.device)
             _all_edges = self.indices[:, edges].reshape(-1, 2)
             _all_edges_sorted = torch.sort(_all_edges, dim=1)[0]
             _all_edges = torch.unique(_all_edges_sorted, dim=0)
@@ -159,10 +173,8 @@ class MarchingTetrahedraHelper(IsosurfaceHelper):
         with torch.no_grad():
             order = (edges_ex2[:, 0] > edges_ex2[:, 1]).long()
             order = order.unsqueeze(dim=1)
-
             a = torch.gather(input=edges_ex2, index=order, dim=1)
             b = torch.gather(input=edges_ex2, index=1 - order, dim=1)
-
         return torch.stack([a, b], -1)
 
     def _forward(self, pos_nx3, sdf_n, tet_fx4):

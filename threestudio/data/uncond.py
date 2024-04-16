@@ -177,7 +177,9 @@ class RandomCameraIterableDataset(IterableDataset, Updateable):
         # --------------------------------------------------------------------------------------------------------------
         elif self._cargs.light_sample_strategy == "magic3d":
             # sample light direction within restricted angle range (pi/3)
+            # (batch, 3). 相机位置的单位向量.
             local_z = F.normalize(camera_positions, dim=-1)
+            # [y, -x, 0].
             local_x = F.normalize(
                 torch.stack([local_z[:, 1], -local_z[:, 0], torch.zeros_like(local_z[:, 0])], dim=-1), dim=-1)
             local_y = F.normalize(torch.cross(local_z, local_x, dim=-1), dim=-1)

@@ -83,15 +83,30 @@ class BaseImplicitGeometry(BaseGeometry):
         raise NotImplementedError
 
     def forward_field(self, points: Float[Tensor, "*N Di"]) -> Tuple[Float[Tensor, "*N 1"], Optional[Float[Tensor, "*N 3"]]]:
+        """ 获取给定位置的场的值，其中场根据不同的方法定义不同，例如density / signed distance.
+        :param points: (n_points, 3). 点的位置.
+        :return
+            - (n_points, 1). 场的值.
+            - (n_points, 3)或None. 若给定的points可以被优化，这些点的形变 (deformation).
+        """
         # return the value of the implicit field, could be density / signed distance
         # also return a deformation field if the grid vertices can be optimized
         raise NotImplementedError
 
     def forward_level(self, field: Float[Tensor, "*N 1"], threshold: float) -> Float[Tensor, "*N 1"]:
+        """ 计算点的场值的level. 当level为0时对应的level set就是模型的表面.
+        :param field: (n_points, 1). 点的场的值.
+        :param threshold: (n_points, 1). 用于计算的阈值.
+        :return (n_points, 1). 点的场值的level.
+        """
         # return the value of the implicit field, where the zero level set represents the surface
         raise NotImplementedError
 
     def _isosurface(self, bbox: Float[Tensor, "2 3"], fine_stage: bool = False) -> Mesh:
+        """
+        :param bbox: (2, 3). 包围盒.
+        """
+
         def batch_func(x):
             # scale to bbox as the input vertices are in [0, 1]
             field, deformation = self.forward_field(
@@ -102,8 +117,14 @@ class BaseImplicitGeometry(BaseGeometry):
             return field, deformation
 
         assert self.isosurface_helper is not None
+        # --------------------------------------------------------------------------------------------------------------
+        # 计算等值面helper的每个grid点的场值以及对应的形变. (n_points, 1) & (n_points, 3).
+        # --------------------------------------------------------------------------------------------------------------
         field, deformation = chunk_batch(batch_func, self.cfg.isosurface_chunk, self.isosurface_helper.grid_vertices)
 
+        # --------------------------------------------------------------------------------------------------------------
+        # 计算每个grid点场值的level. (n_points, 1).
+        # --------------------------------------------------------------------------------------------------------------
         threshold: float
         if isinstance(self.cfg.isosurface_threshold, float):
             threshold = self.cfg.isosurface_threshold
@@ -113,18 +134,24 @@ class BaseImplicitGeometry(BaseGeometry):
             threestudio.info(f"Automatically determined isosurface threshold: {threshold}")
         else:
             raise TypeError(f"Unknown isosurface_threshold {self.cfg.isosurface_threshold}")
-
         level = self.forward_level(field, threshold)
+
+        # --------------------------------------------------------------------------------------------------------------
+        # 根据等值面算法来测定模型表面，进而得到模型mesh.
+        # --------------------------------------------------------------------------------------------------------------
         mesh: Mesh = self.isosurface_helper(level, deformation=deformation)
+        """ 将mesh的顶点缩放到包围盒内. """
         mesh.v_pos = scale_tensor(
             mesh.v_pos, self.isosurface_helper.points_range, bbox)  # scale to bbox as the grid vertices are in [0, 1]
         mesh.add_extra("bbox", bbox)
 
+        """ 移除outlier. """
         if self.cfg.isosurface_remove_outliers:
             # remove outliers components with small number of faces
             # only enabled when the mesh is not differentiable
             mesh = mesh.remove_outlier(self.cfg.isosurface_outlier_n_faces_threshold)
 
+        # Return
         return mesh
 
     def isosurface(self) -> Mesh:
@@ -133,8 +160,12 @@ class BaseImplicitGeometry(BaseGeometry):
         self._initilize_isosurface_helper()
         if self.cfg.isosurface_coarse_to_fine:
             threestudio.debug("First run isosurface to get a tight bounding box ...")
+            # ----------------------------------------------------------------------------------------------------------
+            # 获取粗粒度的模型.
+            # ----------------------------------------------------------------------------------------------------------
             with torch.no_grad():
                 mesh_coarse = self._isosurface(self.bbox)
+            """ 更新包围盒. """
             vmin, vmax = mesh_coarse.v_pos.amin(dim=0), mesh_coarse.v_pos.amax(dim=0)
             vmin_ = (vmin - (vmax - vmin) * 0.1).max(self.bbox[0])
             vmax_ = (vmax + (vmax - vmin) * 0.1).min(self.bbox[1])

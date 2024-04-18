@@ -10,9 +10,11 @@ from threestudio.utils.typing import *
 
 
 class Mesh:
-    def __init__(
-        self, v_pos: Float[Tensor, "Nv 3"], t_pos_idx: Integer[Tensor, "Nf 3"], **kwargs
-    ) -> None:
+    def __init__(self, v_pos: Float[Tensor, "Nv 3"], t_pos_idx: Integer[Tensor, "Nf 3"], **kwargs) -> None:
+        """
+        :param v_pos: (n_vertexes, 3).
+        :param t_pos_idx: (
+        """
         self.v_pos: Float[Tensor, "Nv 3"] = v_pos
         self.t_pos_idx: Integer[Tensor, "Nf 3"] = t_pos_idx
         self._v_nrm: Optional[Float[Tensor, "Nv 3"]] = None
@@ -36,36 +38,23 @@ class Mesh:
         # use trimesh to first split the mesh into connected components
         # then remove the components with less than n_face_threshold faces
         import trimesh
-
         # construct a trimesh object
-        mesh = trimesh.Trimesh(
-            vertices=self.v_pos.detach().cpu().numpy(),
-            faces=self.t_pos_idx.detach().cpu().numpy(),
-        )
-
+        mesh = trimesh.Trimesh(vertices=self.v_pos.detach().cpu().numpy(), faces=self.t_pos_idx.detach().cpu().numpy())
         # split the mesh into connected components
         components = mesh.split(only_watertight=False)
         # log the number of faces in each component
         threestudio.debug(
-            "Mesh has {} components, with faces: {}".format(
-                len(components), [c.faces.shape[0] for c in components]
-            )
-        )
-
+            "Mesh has {} components, with faces: {}".format(len(components), [c.faces.shape[0] for c in components]))
         n_faces_threshold: int
         if isinstance(outlier_n_faces_threshold, float):
             # set the threshold to the number of faces in the largest component multiplied by outlier_n_faces_threshold
-            n_faces_threshold = int(
-                max([c.faces.shape[0] for c in components]) * outlier_n_faces_threshold
-            )
+            n_faces_threshold = int(max([c.faces.shape[0] for c in components]) * outlier_n_faces_threshold)
         else:
             # set the threshold directly to outlier_n_faces_threshold
             n_faces_threshold = outlier_n_faces_threshold
 
         # log the threshold
-        threestudio.debug(
-            "Removing components with less than {} faces".format(n_faces_threshold)
-        )
+        threestudio.debug("Removing components with less than {} faces".format(n_faces_threshold))
 
         # remove the components with less than n_face_threshold faces
         components = [c for c in components if c.faces.shape[0] >= n_faces_threshold]
@@ -73,9 +62,7 @@ class Mesh:
         # log the number of faces in each component after removing outliers
         threestudio.debug(
             "Mesh has {} components after removing outliers, with faces: {}".format(
-                len(components), [c.faces.shape[0] for c in components]
-            )
-        )
+                len(components), [c.faces.shape[0] for c in components]))
         # merge the components
         mesh = trimesh.util.concatenate(components)
 
@@ -89,8 +76,7 @@ class Mesh:
         if len(self.extras) > 0:
             clean_mesh.extras = self.extras
             threestudio.debug(
-                f"The following extra attributes are inherited from the original mesh unchanged: {list(self.extras.keys())}"
-            )
+                f"The following extra attributes are inherited from the original mesh unchanged: {list(self.extras.keys())}")
         return clean_mesh
 
     @property
@@ -141,17 +127,13 @@ class Mesh:
         v2 = self.v_pos[i2, :]
 
         face_normals = torch.cross(v1 - v0, v2 - v0)
-
         # Splat face normals to vertices
         v_nrm = torch.zeros_like(self.v_pos)
         v_nrm.scatter_add_(0, i0[:, None].repeat(1, 3), face_normals)
         v_nrm.scatter_add_(0, i1[:, None].repeat(1, 3), face_normals)
         v_nrm.scatter_add_(0, i2[:, None].repeat(1, 3), face_normals)
-
         # Normalize, replace zero (degenerated) normals with some default value
-        v_nrm = torch.where(
-            dot(v_nrm, v_nrm) > 1e-20, v_nrm, torch.as_tensor([0.0, 0.0, 1.0]).to(v_nrm)
-        )
+        v_nrm = torch.where(dot(v_nrm, v_nrm) > 1e-20, v_nrm, torch.as_tensor([0.0, 0.0, 1.0]).to(v_nrm))
         v_nrm = F.normalize(v_nrm, dim=1)
 
         if torch.is_anomaly_enabled():
@@ -182,17 +164,13 @@ class Mesh:
         denom = uve1[..., 0:1] * uve2[..., 1:2] - uve1[..., 1:2] * uve2[..., 0:1]
 
         # Avoid division by zero for degenerated texture coordinates
-        tang = nom / torch.where(
-            denom > 0.0, torch.clamp(denom, min=1e-6), torch.clamp(denom, max=-1e-6)
-        )
+        tang = nom / torch.where(denom > 0.0, torch.clamp(denom, min=1e-6), torch.clamp(denom, max=-1e-6))
 
         # Update all 3 vertices
         for i in range(0, 3):
             idx = vn_idx[i][:, None].repeat(1, 3)
             tangents.scatter_add_(0, idx, tang)  # tangents[n_i] = tangents[n_i] + tang
-            tansum.scatter_add_(
-                0, idx, torch.ones_like(tang)
-            )  # tansum[n_i] = tansum[n_i] + 1
+            tansum.scatter_add_(0, idx, torch.ones_like(tang))  # tansum[n_i] = tansum[n_i] + 1
         tangents = tangents / tansum
 
         # Normalize and make sure tangent is perpendicular to normal
@@ -204,18 +182,13 @@ class Mesh:
 
         return tangents
 
-    def _unwrap_uv(
-        self, xatlas_chart_options: dict = {}, xatlas_pack_options: dict = {}
-    ):
+    def _unwrap_uv(self, xatlas_chart_options: dict = {}, xatlas_pack_options: dict = {}):
         threestudio.info("Using xatlas to perform UV unwrapping, may take a while ...")
 
         import xatlas
 
         atlas = xatlas.Atlas()
-        atlas.add_mesh(
-            self.v_pos.detach().cpu().numpy(),
-            self.t_pos_idx.cpu().numpy(),
-        )
+        atlas.add_mesh(self.v_pos.detach().cpu().numpy(), self.t_pos_idx.cpu().numpy())
         co = xatlas.ChartOptions()
         po = xatlas.PackOptions()
         for k, v in xatlas_chart_options.items():
@@ -224,29 +197,15 @@ class Mesh:
             setattr(po, k, v)
         atlas.generate(co, po)
         vmapping, indices, uvs = atlas.get_mesh(0)
-        vmapping = (
-            torch.from_numpy(
-                vmapping.astype(np.uint64, casting="same_kind").view(np.int64)
-            )
-            .to(self.v_pos.device)
-            .long()
-        )
+        vmapping = torch.from_numpy(
+            vmapping.astype(np.uint64, casting="same_kind").view(np.int64)).to(self.v_pos.device).long()
         uvs = torch.from_numpy(uvs).to(self.v_pos.device).float()
-        indices = (
-            torch.from_numpy(
-                indices.astype(np.uint64, casting="same_kind").view(np.int64)
-            )
-            .to(self.v_pos.device)
-            .long()
-        )
+        indices = torch.from_numpy(
+            indices.astype(np.uint64, casting="same_kind").view(np.int64)).to(self.v_pos.device).long()
         return uvs, indices
 
-    def unwrap_uv(
-        self, xatlas_chart_options: dict = {}, xatlas_pack_options: dict = {}
-    ):
-        self._v_tex, self._t_tex_idx = self._unwrap_uv(
-            xatlas_chart_options, xatlas_pack_options
-        )
+    def unwrap_uv(self, xatlas_chart_options: dict = {}, xatlas_pack_options: dict = {}):
+        self._v_tex, self._t_tex_idx = self._unwrap_uv(xatlas_chart_options, xatlas_pack_options)
 
     def set_vertex_color(self, v_rgb):
         assert v_rgb.shape[0] == self.v_pos.shape[0]
@@ -254,23 +213,15 @@ class Mesh:
 
     def _compute_edges(self):
         # Compute edges
-        edges = torch.cat(
-            [
-                self.t_pos_idx[:, [0, 1]],
-                self.t_pos_idx[:, [1, 2]],
-                self.t_pos_idx[:, [2, 0]],
-            ],
-            dim=0,
-        )
+        edges = torch.cat([
+            self.t_pos_idx[:, [0, 1]], self.t_pos_idx[:, [1, 2]], self.t_pos_idx[:, [2, 0]]], dim=0)
         edges = edges.sort()[0]
         edges = torch.unique(edges, dim=0)
         return edges
 
     def normal_consistency(self) -> Float[Tensor, ""]:
         edge_nrm: Float[Tensor, "Ne 2 3"] = self.v_nrm[self.edges]
-        nc = (
-            1.0 - torch.cosine_similarity(edge_nrm[:, 0], edge_nrm[:, 1], dim=-1)
-        ).mean()
+        nc = (1.0 - torch.cosine_similarity(edge_nrm[:, 0], edge_nrm[:, 1], dim=-1)).mean()
         return nc
 
     def _laplacian_uniform(self):
@@ -284,9 +235,7 @@ class Mesh:
         # Neighbor indices
         ii = faces[:, [1, 2, 0]].flatten()
         jj = faces[:, [2, 0, 1]].flatten()
-        adj = torch.stack([torch.cat([ii, jj]), torch.cat([jj, ii])], dim=0).unique(
-            dim=1
-        )
+        adj = torch.stack([torch.cat([ii, jj]), torch.cat([jj, ii])], dim=0).unique(dim=1)
         adj_values = torch.ones(adj.shape[1]).to(verts)
 
         # Diagonal indices

@@ -24,9 +24,7 @@ def reflect(x, n):
 ValidScale = Union[Tuple[float, float], Num[Tensor, "2 D"]]
 
 
-def scale_tensor(
-    dat: Num[Tensor, "... D"], inp_scale: ValidScale, tgt_scale: ValidScale
-):
+def scale_tensor(dat: Num[Tensor, "... D"], inp_scale: ValidScale, tgt_scale: ValidScale):
     if inp_scale is None:
         inp_scale = (0, 1)
     if tgt_scale is None:

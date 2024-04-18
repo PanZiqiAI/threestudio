@@ -1,17 +1,13 @@
+
 import os
 from dataclasses import dataclass, field
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 import threestudio
-from threestudio.models.geometry.base import (
-    BaseExplicitGeometry,
-    BaseGeometry,
-    contract_to_unisphere,
-)
+from threestudio.models.geometry.base import BaseExplicitGeometry, BaseGeometry, contract_to_unisphere
 from threestudio.models.geometry.implicit_sdf import ImplicitSDF
 from threestudio.models.geometry.implicit_volume import ImplicitVolume
 from threestudio.models.isosurface import MarchingTetrahedraHelper
@@ -206,91 +202,78 @@ class TetrahedraSDFGrid(BaseExplicitGeometry):
 
     @staticmethod
     @torch.no_grad()
-    def create_from(
-        other: BaseGeometry,
-        cfg: Optional[Union[dict, DictConfig]] = None,
-        copy_net: bool = True,
-        **kwargs,
-    ) -> "TetrahedraSDFGrid":
+    def create_from(other: BaseGeometry, cfg: Optional[Union[dict, DictConfig]] = None, copy_net: bool = True, **kwargs,) -> "TetrahedraSDFGrid":
+        """ 从另外的geometry初始化.
+        :param other: 另外的geometry.
+        :param cfg: 另外的geometry对应的配置.
+        :param copy_net: 是否读取另外geometry的的网络参数.
+        """
+        # --------------------------------------------------------------------------------------------------------------
+        # 从TetrahedraSDFGrid初始化.
+        # --------------------------------------------------------------------------------------------------------------
         if isinstance(other, TetrahedraSDFGrid):
             instance = TetrahedraSDFGrid(cfg, **kwargs)
             assert instance.cfg.isosurface_resolution == other.cfg.isosurface_resolution
+            # 拷贝isosurface_bbox.
             instance.isosurface_bbox = other.isosurface_bbox.clone()
+            # 拷贝sdf.data / deformation.data
             instance.sdf.data = other.sdf.data.clone()
-            if (
-                instance.cfg.isosurface_deformable_grid
-                and other.cfg.isosurface_deformable_grid
-            ):
-                assert (
-                    instance.deformation is not None and other.deformation is not None
-                )
+            if instance.cfg.isosurface_deformable_grid and other.cfg.isosurface_deformable_grid:
+                assert instance.deformation is not None and other.deformation is not None
                 instance.deformation.data = other.deformation.data.clone()
-            if (
-                not instance.cfg.geometry_only
-                and not other.cfg.geometry_only
-                and copy_net
-            ):
+            # 拷贝网络参数.
+            if not instance.cfg.geometry_only and not other.cfg.geometry_only and copy_net:
                 instance.encoding.load_state_dict(other.encoding.state_dict())
-                instance.feature_network.load_state_dict(
-                    other.feature_network.state_dict()
-                )
+                instance.feature_network.load_state_dict(other.feature_network.state_dict())
             return instance
+        # --------------------------------------------------------------------------------------------------------------
+        # 从Implicit Volume初始化.
+        # --------------------------------------------------------------------------------------------------------------
         elif isinstance(other, ImplicitVolume):
             instance = TetrahedraSDFGrid(cfg, **kwargs)
+            """ 检查另外cfg.isosurface_method / isosurface_resolution. """
             if other.cfg.isosurface_method != "mt":
                 other.cfg.isosurface_method = "mt"
-                threestudio.warn(
-                    f"Override isosurface_method of the source geometry to 'mt'"
-                )
+                threestudio.warn(f"Override isosurface_method of the source geometry to 'mt'")
             if other.cfg.isosurface_resolution != instance.cfg.isosurface_resolution:
                 other.cfg.isosurface_resolution = instance.cfg.isosurface_resolution
-                threestudio.warn(
-                    f"Override isosurface_resolution of the source geometry to {instance.cfg.isosurface_resolution}"
-                )
+                threestudio.warn(f"Override isosurface_resolution of the source geometry to {instance.cfg.isosurface_resolution}")
+            # 拷贝isosurface_bbox / sdf.data.
             mesh = other.isosurface()
             instance.isosurface_bbox = mesh.extras["bbox"]
-            instance.sdf.data = (
-                mesh.extras["grid_level"].to(instance.sdf.data).clamp(-1, 1)
-            )
+            instance.sdf.data = mesh.extras["grid_level"].to(instance.sdf.data).clamp(-1, 1)
+            # 拷贝网络参数.
             if not instance.cfg.geometry_only and copy_net:
                 instance.encoding.load_state_dict(other.encoding.state_dict())
-                instance.feature_network.load_state_dict(
-                    other.feature_network.state_dict()
-                )
+                instance.feature_network.load_state_dict(other.feature_network.state_dict())
             return instance
+        # --------------------------------------------------------------------------------------------------------------
+        # 从ImplicitSDF初始化.
+        # --------------------------------------------------------------------------------------------------------------
         elif isinstance(other, ImplicitSDF):
             instance = TetrahedraSDFGrid(cfg, **kwargs)
+            """ 检查另外cfg.isosurface_method / isosurface_resolution. """
             if other.cfg.isosurface_method != "mt":
                 other.cfg.isosurface_method = "mt"
-                threestudio.warn(
-                    f"Override isosurface_method of the source geometry to 'mt'"
-                )
+                threestudio.warn(f"Override isosurface_method of the source geometry to 'mt'")
             if other.cfg.isosurface_resolution != instance.cfg.isosurface_resolution:
                 other.cfg.isosurface_resolution = instance.cfg.isosurface_resolution
-                threestudio.warn(
-                    f"Override isosurface_resolution of the source geometry to {instance.cfg.isosurface_resolution}"
-                )
+                threestudio.warn(f"Override isosurface_resolution of the source geometry to {instance.cfg.isosurface_resolution}")
+            # 拷贝isosurface_bbox / sdf.data.
             mesh = other.isosurface()
             instance.isosurface_bbox = mesh.extras["bbox"]
             instance.sdf.data = mesh.extras["grid_level"].to(instance.sdf.data)
-            if (
-                instance.cfg.isosurface_deformable_grid
-                and other.cfg.isosurface_deformable_grid
-            ):
+            # 拷贝deformation.data
+            if instance.cfg.isosurface_deformable_grid and other.cfg.isosurface_deformable_grid:
                 assert instance.deformation is not None
-                instance.deformation.data = mesh.extras["grid_deformation"].to(
-                    instance.deformation.data
-                )
+                instance.deformation.data = mesh.extras["grid_deformation"].to(instance.deformation.data)
+            # 拷贝网络参数.
             if not instance.cfg.geometry_only and copy_net:
                 instance.encoding.load_state_dict(other.encoding.state_dict())
-                instance.feature_network.load_state_dict(
-                    other.feature_network.state_dict()
-                )
+                instance.feature_network.load_state_dict(other.feature_network.state_dict())
             return instance
         else:
-            raise TypeError(
-                f"Cannot create {TetrahedraSDFGrid.__name__} from {other.__class__.__name__}"
-            )
+            raise TypeError(f"Cannot create {TetrahedraSDFGrid.__name__} from {other.__class__.__name__}")
 
     def export(self, points: Float[Tensor, "*N Di"], **kwargs) -> Dict[str, Any]:
         out: Dict[str, Any] = {}

@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from diffusers import DDIMScheduler, DDPMScheduler, StableDiffusionPipeline
 from diffusers.utils.import_utils import is_xformers_available
@@ -52,90 +51,68 @@ class StableDiffusionGuidance(BaseObject):
 
     def configure(self) -> None:
         threestudio.info(f"Loading Stable Diffusion ...")
-
-        self.weights_dtype = (
-            torch.float16 if self.cfg.half_precision_weights else torch.float32
-        )
-
+        self.weights_dtype = (torch.float16 if self.cfg.half_precision_weights else torch.float32)
+        # --------------------------------------------------------------------------------------------------------------
+        # 构建pipe.
+        # --------------------------------------------------------------------------------------------------------------
         pipe_kwargs = {
             "tokenizer": None,
             "safety_checker": None,
             "feature_extractor": None,
             "requires_safety_checker": False,
-            "torch_dtype": self.weights_dtype,
-        }
+            "torch_dtype": self.weights_dtype}
         self.pipe = StableDiffusionPipeline.from_pretrained(
-            self.cfg.pretrained_model_name_or_path,
-            **pipe_kwargs,
-        ).to(self.device)
-
+            self.cfg.pretrained_model_name_or_path, **pipe_kwargs).to(self.device)
+        # 部署pipe.
         if self.cfg.enable_memory_efficient_attention:
             if parse_version(torch.__version__) >= parse_version("2"):
-                threestudio.info(
-                    "PyTorch2.0 uses memory efficient attention by default."
-                )
+                threestudio.info("PyTorch2.0 uses memory efficient attention by default.")
             elif not is_xformers_available():
-                threestudio.warn(
-                    "xformers is not available, memory efficient attention is not enabled."
-                )
+                threestudio.warn("xformers is not available, memory efficient attention is not enabled.")
             else:
                 self.pipe.enable_xformers_memory_efficient_attention()
-
         if self.cfg.enable_sequential_cpu_offload:
             self.pipe.enable_sequential_cpu_offload()
-
         if self.cfg.enable_attention_slicing:
             self.pipe.enable_attention_slicing(1)
-
         if self.cfg.enable_channels_last_format:
             self.pipe.unet.to(memory_format=torch.channels_last)
-
         del self.pipe.text_encoder
         cleanup()
-
-        # Create model
+        # --------------------------------------------------------------------------------------------------------------
+        # 设置VAE和UNet.
+        # --------------------------------------------------------------------------------------------------------------
         self.vae = self.pipe.vae.eval()
         self.unet = self.pipe.unet.eval()
-
         for p in self.vae.parameters():
             p.requires_grad_(False)
         for p in self.unet.parameters():
             p.requires_grad_(False)
-
         if self.cfg.token_merging:
             import tomesd
-
             tomesd.apply_patch(self.unet, **self.cfg.token_merging_params)
-
+        # --------------------------------------------------------------------------------------------------------------
+        # 设置scheduler.
+        # --------------------------------------------------------------------------------------------------------------
         if self.cfg.use_sjc:
             # score jacobian chaining use DDPM
             self.scheduler = DDPMScheduler.from_pretrained(
-                self.cfg.pretrained_model_name_or_path,
-                subfolder="scheduler",
-                torch_dtype=self.weights_dtype,
-                beta_start=0.00085,
-                beta_end=0.0120,
-                beta_schedule="scaled_linear",
-            )
+                self.cfg.pretrained_model_name_or_path, subfolder="scheduler", torch_dtype=self.weights_dtype,
+                beta_start=0.00085, beta_end=0.0120, beta_schedule="scaled_linear")
         else:
             self.scheduler = DDIMScheduler.from_pretrained(
-                self.cfg.pretrained_model_name_or_path,
-                subfolder="scheduler",
-                torch_dtype=self.weights_dtype,
-            )
+                self.cfg.pretrained_model_name_or_path, subfolder="scheduler", torch_dtype=self.weights_dtype)
 
+        ################################################################################################################
+        # 其它状态.
+        ################################################################################################################
         self.num_train_timesteps = self.scheduler.config.num_train_timesteps
         self.set_min_max_steps()  # set to default value
-
-        self.alphas: Float[Tensor, "..."] = self.scheduler.alphas_cumprod.to(
-            self.device
-        )
+        self.alphas: Float[Tensor, "..."] = self.scheduler.alphas_cumprod.to(self.device)
         if self.cfg.use_sjc:
             # score jacobian chaining need mu
             self.us: Float[Tensor, "..."] = torch.sqrt((1 - self.alphas) / self.alphas)
-
         self.grad_clip_val: Optional[float] = None
-
         threestudio.info(f"Loaded Stable Diffusion!")
 
     @torch.cuda.amp.autocast(enabled=False)
@@ -144,23 +121,14 @@ class StableDiffusionGuidance(BaseObject):
         self.max_step = int(self.num_train_timesteps * max_step_percent)
 
     @torch.cuda.amp.autocast(enabled=False)
-    def forward_unet(
-        self,
-        latents: Float[Tensor, "..."],
-        t: Float[Tensor, "..."],
-        encoder_hidden_states: Float[Tensor, "..."],
-    ) -> Float[Tensor, "..."]:
+    def forward_unet(self, latents: Float[Tensor, "..."], t: Float[Tensor, "..."], encoder_hidden_states: Float[Tensor, "..."]) -> Float[Tensor, "..."]:
         input_dtype = latents.dtype
-        return self.unet(
-            latents.to(self.weights_dtype),
-            t.to(self.weights_dtype),
-            encoder_hidden_states=encoder_hidden_states.to(self.weights_dtype),
-        ).sample.to(input_dtype)
+        return self.unet(latents.to(self.weights_dtype), t.to(self.weights_dtype),
+                         encoder_hidden_states=encoder_hidden_states.to(self.weights_dtype)).sample.to(input_dtype)
 
     @torch.cuda.amp.autocast(enabled=False)
-    def encode_images(
-        self, imgs: Float[Tensor, "B 3 512 512"]
-    ) -> Float[Tensor, "B 4 64 64"]:
+    def encode_images(self, imgs: Float[Tensor, "B 3 512 512"]) -> Float[Tensor, "B 4 64 64"]:
+        """ 使用VAE将图像编码成latents. """
         input_dtype = imgs.dtype
         imgs = imgs * 2.0 - 1.0
         posterior = self.vae.encode(imgs.to(self.weights_dtype)).latent_dist
@@ -168,71 +136,48 @@ class StableDiffusionGuidance(BaseObject):
         return latents.to(input_dtype)
 
     @torch.cuda.amp.autocast(enabled=False)
-    def decode_latents(
-        self,
-        latents: Float[Tensor, "B 4 H W"],
-        latent_height: int = 64,
-        latent_width: int = 64,
-    ) -> Float[Tensor, "B 3 512 512"]:
+    def decode_latents(self, latents: Float[Tensor, "B 4 H W"], latent_height: int = 64, latent_width: int = 64) -> Float[Tensor, "B 3 512 512"]:
+        """ 使用VAE将latents解码成图像. """
         input_dtype = latents.dtype
-        latents = F.interpolate(
-            latents, (latent_height, latent_width), mode="bilinear", align_corners=False
-        )
+        latents = F.interpolate(latents, (latent_height, latent_width), mode="bilinear", align_corners=False)
         latents = 1 / self.vae.config.scaling_factor * latents
         image = self.vae.decode(latents.to(self.weights_dtype)).sample
         image = (image * 0.5 + 0.5).clamp(0, 1)
         return image.to(input_dtype)
 
-    def compute_grad_sds(
-        self,
-        latents: Float[Tensor, "B 4 64 64"],
-        image: Float[Tensor, "B 3 512 512"],
-        t: Int[Tensor, "B"],
-        prompt_utils: PromptProcessorOutput,
-        elevation: Float[Tensor, "B"],
-        azimuth: Float[Tensor, "B"],
-        camera_distances: Float[Tensor, "B"],
-    ):
+    def compute_grad_sds(self, latents: Float[Tensor, "B 4 64 64"], image: Float[Tensor, "B 3 512 512"], t: Int[Tensor, "B"],
+                         prompt_utils: PromptProcessorOutput, elevation: Float[Tensor, "B"], azimuth: Float[Tensor, "B"],
+                         camera_distances: Float[Tensor, "B"]):
+        """ 计算SDS的grad. """
         batch_size = elevation.shape[0]
-
+        ################################################################################################################
+        # 根据不同的prompt设置来得到noise_pred.
+        ################################################################################################################
         if prompt_utils.use_perp_neg:
-            (
-                text_embeddings,
-                neg_guidance_weights,
-            ) = prompt_utils.get_text_embeddings_perp_neg(
-                elevation, azimuth, camera_distances, self.cfg.view_dependent_prompting
-            )
+            text_embeddings, neg_guidance_weights = prompt_utils.get_text_embeddings_perp_neg(
+                elevation, azimuth, camera_distances, self.cfg.view_dependent_prompting)
             with torch.no_grad():
                 noise = torch.randn_like(latents)
                 latents_noisy = self.scheduler.add_noise(latents, noise, t)
                 latent_model_input = torch.cat([latents_noisy] * 4, dim=0)
-                noise_pred = self.forward_unet(
-                    latent_model_input,
-                    torch.cat([t] * 4),
-                    encoder_hidden_states=text_embeddings,
-                )  # (4B, 3, 64, 64)
+                noise_pred = self.forward_unet(latent_model_input, torch.cat([t] * 4), encoder_hidden_states=text_embeddings)  # (4B, 3, 64, 64)
 
             noise_pred_text = noise_pred[:batch_size]
-            noise_pred_uncond = noise_pred[batch_size : batch_size * 2]
-            noise_pred_neg = noise_pred[batch_size * 2 :]
+            noise_pred_uncond = noise_pred[batch_size: batch_size * 2]
+            noise_pred_neg = noise_pred[batch_size * 2:]
 
             e_pos = noise_pred_text - noise_pred_uncond
             accum_grad = 0
             n_negative_prompts = neg_guidance_weights.shape[-1]
             for i in range(n_negative_prompts):
                 e_i_neg = noise_pred_neg[i::n_negative_prompts] - noise_pred_uncond
-                accum_grad += neg_guidance_weights[:, i].view(
-                    -1, 1, 1, 1
-                ) * perpendicular_component(e_i_neg, e_pos)
+                accum_grad += neg_guidance_weights[:, i].view(-1, 1, 1, 1) * perpendicular_component(e_i_neg, e_pos)
 
-            noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (
-                e_pos + accum_grad
-            )
+            noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (e_pos + accum_grad)
         else:
             neg_guidance_weights = None
             text_embeddings = prompt_utils.get_text_embeddings(
-                elevation, azimuth, camera_distances, self.cfg.view_dependent_prompting
-            )
+                elevation, azimuth, camera_distances, self.cfg.view_dependent_prompting)
             # predict the noise residual with unet, NO grad!
             with torch.no_grad():
                 # add noise
@@ -240,18 +185,18 @@ class StableDiffusionGuidance(BaseObject):
                 latents_noisy = self.scheduler.add_noise(latents, noise, t)
                 # pred noise
                 latent_model_input = torch.cat([latents_noisy] * 2, dim=0)
-                noise_pred = self.forward_unet(
-                    latent_model_input,
-                    torch.cat([t] * 2),
-                    encoder_hidden_states=text_embeddings,
-                )
+                noise_pred = self.forward_unet(latent_model_input, torch.cat([t] * 2), encoder_hidden_states=text_embeddings)
 
             # perform guidance (high scale from paper!)
             noise_pred_text, noise_pred_uncond = noise_pred.chunk(2)
-            noise_pred = noise_pred_text + self.cfg.guidance_scale * (
-                noise_pred_text - noise_pred_uncond
-            )
+            noise_pred = noise_pred_text + self.cfg.guidance_scale * (noise_pred_text - noise_pred_uncond)
 
+        ################################################################################################################
+        # 计算SDS的grad.
+        ################################################################################################################
+        # --------------------------------------------------------------------------------------------------------------
+        # w.
+        # --------------------------------------------------------------------------------------------------------------
         if self.cfg.weighting_strategy == "sds":
             # w(t), sigma_t^2
             w = (1 - self.alphas[t]).view(-1, 1, 1, 1)
@@ -260,31 +205,34 @@ class StableDiffusionGuidance(BaseObject):
         elif self.cfg.weighting_strategy == "fantasia3d":
             w = (self.alphas[t] ** 0.5 * (1 - self.alphas[t])).view(-1, 1, 1, 1)
         else:
-            raise ValueError(
-                f"Unknown weighting strategy: {self.cfg.weighting_strategy}"
-            )
-
+            raise ValueError(f"Unknown weighting strategy: {self.cfg.weighting_strategy}")
+        # --------------------------------------------------------------------------------------------------------------
+        # (1) latents的grad.
+        # --------------------------------------------------------------------------------------------------------------
+        grad = w * (noise_pred - noise)
+        # --------------------------------------------------------------------------------------------------------------
+        # (2) img的grad.
+        # --------------------------------------------------------------------------------------------------------------
         alpha = (self.alphas[t] ** 0.5).view(-1, 1, 1, 1)
         sigma = ((1 - self.alphas[t]) ** 0.5).view(-1, 1, 1, 1)
         latents_denoised = (latents_noisy - sigma * noise_pred) / alpha
         image_denoised = self.decode_latents(latents_denoised)
-
-        grad = w * (noise_pred - noise)
         # image-space SDS proposed in HiFA: https://hifa-team.github.io/HiFA-site/
         if self.cfg.use_img_loss:
             grad_img = w * (image - image_denoised) * alpha / sigma
         else:
             grad_img = None
 
+        # 为guidance_eval准备.
         guidance_eval_utils = {
             "use_perp_neg": prompt_utils.use_perp_neg,
             "neg_guidance_weights": neg_guidance_weights,
             "text_embeddings": text_embeddings,
             "t_orig": t,
             "latents_noisy": latents_noisy,
-            "noise_pred": noise_pred,
-        }
+            "noise_pred": noise_pred}
 
+        # Return.
         return grad, grad_img, guidance_eval_utils
 
     def compute_grad_sjc(
@@ -383,63 +331,47 @@ class StableDiffusionGuidance(BaseObject):
 
         return grad, guidance_eval_utils
 
-    def __call__(
-        self,
-        rgb: Float[Tensor, "B H W C"],
-        prompt_utils: PromptProcessorOutput,
-        elevation: Float[Tensor, "B"],
-        azimuth: Float[Tensor, "B"],
-        camera_distances: Float[Tensor, "B"],
-        rgb_as_latents=False,
-        guidance_eval=False,
-        **kwargs,
-    ):
+    def __call__(self, rgb: Float[Tensor, "B H W C"], prompt_utils: PromptProcessorOutput, elevation: Float[Tensor, "B"],
+                 azimuth: Float[Tensor, "B"], camera_distances: Float[Tensor, "B"], rgb_as_latents=False, guidance_eval=False, **kwargs):
         batch_size = rgb.shape[0]
 
+        # --------------------------------------------------------------------------------------------------------------
+        # 获取RGB图像和latents.
+        # --------------------------------------------------------------------------------------------------------------
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
         latents: Float[Tensor, "B 4 64 64"]
-        rgb_BCHW_512 = F.interpolate(
-            rgb_BCHW, (512, 512), mode="bilinear", align_corners=False
-        )
+        rgb_BCHW_512 = F.interpolate(rgb_BCHW, (512, 512), mode="bilinear", align_corners=False)
         if rgb_as_latents:
-            latents = F.interpolate(
-                rgb_BCHW, (64, 64), mode="bilinear", align_corners=False
-            )
+            latents = F.interpolate(rgb_BCHW, (64, 64), mode="bilinear", align_corners=False)
         else:
             # encode image into latents with vae
             latents = self.encode_images(rgb_BCHW_512)
-
+        # --------------------------------------------------------------------------------------------------------------
+        # 获取Timesteps.
+        # --------------------------------------------------------------------------------------------------------------
         # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
         t = torch.randint(
-            self.min_step,
-            self.max_step + 1,
-            [batch_size],
-            dtype=torch.long,
-            device=self.device,
-        )
+            self.min_step, self.max_step + 1, [batch_size], dtype=torch.long, device=self.device)
 
+        ################################################################################################################
+        # 计算SDS损失.
+        ################################################################################################################
+        # --------------------------------------------------------------------------------------------------------------
+        # 计算grad.
+        # --------------------------------------------------------------------------------------------------------------
         if self.cfg.use_sjc:
-            grad, guidance_eval_utils = self.compute_grad_sjc(
-                latents, t, prompt_utils, elevation, azimuth, camera_distances
-            )
+            grad, guidance_eval_utils = self.compute_grad_sjc(latents, t, prompt_utils, elevation, azimuth, camera_distances)
             grad_img = torch.tensor([0.0], dtype=grad.dtype).to(grad.device)
         else:
             grad, grad_img, guidance_eval_utils = self.compute_grad_sds(
-                latents,
-                rgb_BCHW_512,
-                t,
-                prompt_utils,
-                elevation,
-                azimuth,
-                camera_distances,
-            )
-
+                latents, rgb_BCHW_512, t, prompt_utils, elevation, azimuth, camera_distances)
         grad = torch.nan_to_num(grad)
-
         # clip grad for stable training?
         if self.grad_clip_val is not None:
             grad = grad.clamp(-self.grad_clip_val, self.grad_clip_val)
-
+        # --------------------------------------------------------------------------------------------------------------
+        # (1) 计算SDS损失: latents.
+        # --------------------------------------------------------------------------------------------------------------
         # loss = SpecifyGradient.apply(latents, grad)
         # SpecifyGradient is not straghtforward, use a reparameterization trick instead
         target = (latents - grad).detach()
@@ -447,34 +379,31 @@ class StableDiffusionGuidance(BaseObject):
         loss_sds = 0.5 * F.mse_loss(latents, target, reduction="sum") / batch_size
 
         guidance_out = {
-            "loss_sds": loss_sds,
-            "grad_norm": grad.norm(),
-            "min_step": self.min_step,
-            "max_step": self.max_step,
-        }
+            "loss_sds": loss_sds, "grad_norm": grad.norm(), "min_step": self.min_step, "max_step": self.max_step}
 
+        # --------------------------------------------------------------------------------------------------------------
+        # (2) 计算SDS损失: imgs.
+        # --------------------------------------------------------------------------------------------------------------
         if self.cfg.use_img_loss:
             grad_img = torch.nan_to_num(grad_img)
             if self.grad_clip_val is not None:
                 grad_img = grad_img.clamp(-self.grad_clip_val, self.grad_clip_val)
             target_img = (rgb_BCHW_512 - grad_img).detach()
-            loss_sds_img = (
-                0.5 * F.mse_loss(rgb_BCHW_512, target_img, reduction="sum") / batch_size
-            )
+            loss_sds_img = (0.5 * F.mse_loss(rgb_BCHW_512, target_img, reduction="sum") / batch_size)
             guidance_out["loss_sds_img"] = loss_sds_img
 
+        ################################################################################################################
+        # 评估.
+        ################################################################################################################
         if guidance_eval:
             guidance_eval_out = self.guidance_eval(**guidance_eval_utils)
             texts = []
-            for n, e, a, c in zip(
-                guidance_eval_out["noise_levels"], elevation, azimuth, camera_distances
-            ):
-                texts.append(
-                    f"n{n:.02f}\ne{e.item():.01f}\na{a.item():.01f}\nc{c.item():.02f}"
-                )
+            for n, e, a, c in zip(guidance_eval_out["noise_levels"], elevation, azimuth, camera_distances):
+                texts.append(f"n{n:.02f}\ne{e.item():.01f}\na{a.item():.01f}\nc{c.item():.02f}")
             guidance_eval_out.update({"texts": texts})
             guidance_out.update({"eval": guidance_eval_out})
 
+        # Return.
         return guidance_out
 
     @torch.cuda.amp.autocast(enabled=False)
@@ -616,22 +545,15 @@ class StableDiffusionGuidance(BaseObject):
             self.grad_clip_val = C(self.cfg.grad_clip, epoch, global_step)
 
         if self.cfg.sqrt_anneal:
-            percentage = (
-                float(global_step) / self.cfg.trainer_max_steps
-            ) ** 0.5  # progress percentage
+            percentage = (float(global_step) / self.cfg.trainer_max_steps) ** 0.5  # progress percentage
             if type(self.cfg.max_step_percent) not in [float, int]:
                 max_step_percent = self.cfg.max_step_percent[1]
             else:
                 max_step_percent = self.cfg.max_step_percent
-            curr_percent = (
-                max_step_percent - C(self.cfg.min_step_percent, epoch, global_step)
-            ) * (1 - percentage) + C(self.cfg.min_step_percent, epoch, global_step)
-            self.set_min_max_steps(
-                min_step_percent=curr_percent,
-                max_step_percent=curr_percent,
-            )
+            curr_percent = (max_step_percent - C(self.cfg.min_step_percent, epoch, global_step)) * (1 - percentage) + \
+                           C(self.cfg.min_step_percent, epoch, global_step)
+            self.set_min_max_steps(min_step_percent=curr_percent, max_step_percent=curr_percent)
         else:
             self.set_min_max_steps(
                 min_step_percent=C(self.cfg.min_step_percent, epoch, global_step),
-                max_step_percent=C(self.cfg.max_step_percent, epoch, global_step),
-            )
+                max_step_percent=C(self.cfg.max_step_percent, epoch, global_step))

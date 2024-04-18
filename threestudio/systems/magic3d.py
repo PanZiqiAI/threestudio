@@ -1,11 +1,7 @@
-import os
-from dataclasses import dataclass, field
 
-import torch
-
+from dataclasses import dataclass
 import threestudio
 from threestudio.systems.base import BaseLift3DSystem
-from threestudio.utils.misc import cleanup, get_device
 from threestudio.utils.ops import binary_cross_entropy, dot
 from threestudio.utils.typing import *
 
@@ -24,24 +20,18 @@ class Magic3D(BaseLift3DSystem):
 
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         render_out = self.renderer(**batch)
-        return {
-            **render_out,
-        }
+        return {**render_out}
 
     def on_fit_start(self) -> None:
         super().on_fit_start()
         # only used in training
-        self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
-            self.cfg.prompt_processor
-        )
+        self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(self.cfg.prompt_processor)
         self.guidance = threestudio.find(self.cfg.guidance_type)(self.cfg.guidance)
 
     def training_step(self, batch, batch_idx):
         out = self(batch)
         prompt_utils = self.prompt_processor()
-        guidance_out = self.guidance(
-            out["comp_rgb"], prompt_utils, **batch, rgb_as_latents=False
-        )
+        guidance_out = self.guidance(out["comp_rgb"], prompt_utils, **batch, rgb_as_latents=False)
 
         loss = 0.0
 
@@ -53,13 +43,9 @@ class Magic3D(BaseLift3DSystem):
         if not self.cfg.refinement:
             if self.C(self.cfg.loss.lambda_orient) > 0:
                 if "normal" not in out:
-                    raise ValueError(
-                        "Normal is required for orientation loss, no normal is found in the output."
-                    )
-                loss_orient = (
-                    out["weights"].detach()
-                    * dot(out["normal"], out["t_dirs"]).clamp_min(0.0) ** 2
-                ).sum() / (out["opacity"] > 0).sum()
+                    raise ValueError("Normal is required for orientation loss, no normal is found in the output.")
+                loss_orient = (out["weights"].detach() * dot(out["normal"], out["t_dirs"]).clamp_min(0.0) ** 2).sum() / \
+                              (out["opacity"] > 0).sum()
                 self.log("train/loss_orient", loss_orient)
                 loss += loss_orient * self.C(self.cfg.loss.lambda_orient)
 
@@ -74,9 +60,7 @@ class Magic3D(BaseLift3DSystem):
         else:
             loss_normal_consistency = out["mesh"].normal_consistency()
             self.log("train/loss_normal_consistency", loss_normal_consistency)
-            loss += loss_normal_consistency * self.C(
-                self.cfg.loss.lambda_normal_consistency
-            )
+            loss += loss_normal_consistency * self.C(self.cfg.loss.lambda_normal_consistency)
 
         for name, value in self.cfg.loss.items():
             self.log(f"train_params/{name}", self.C(value))

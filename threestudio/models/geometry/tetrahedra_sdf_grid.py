@@ -68,7 +68,7 @@ class TetrahedraSDFGrid(BaseExplicitGeometry):
         self.isosurface_bbox: Float[Tensor, "2 3"]
         self.register_buffer("isosurface_bbox", self.bbox.clone())
         # --------------------------------------------------------------------------------------------------------------
-        # 等值面帮手.
+        # 等值面.
         # --------------------------------------------------------------------------------------------------------------
         self.isosurface_helper = MarchingTetrahedraHelper(
             self.cfg.isosurface_resolution, f"load/tets/{self.cfg.isosurface_resolution}_tets.npz",)
@@ -182,22 +182,35 @@ class TetrahedraSDFGrid(BaseExplicitGeometry):
             broadcast(param, src=0)
 
     def isosurface(self) -> Mesh:
-        # return cached mesh if fix_geometry is True to save computation
+        # --------------------------------------------------------------------------------------------------------------
+        # 1. 当mesh是固定不可优化的，那么直接返回mesh
+        # --------------------------------------------------------------------------------------------------------------
         if self.cfg.fix_geometry and self.mesh is not None: return self.mesh
+        # --------------------------------------------------------------------------------------------------------------
+        # 2. 根据SDF和形变，使用等值面来构建模型.
+        # --------------------------------------------------------------------------------------------------------------
         mesh = self.isosurface_helper(self.sdf, self.deformation)
         mesh.v_pos = scale_tensor(mesh.v_pos, self.isosurface_helper.points_range, self.isosurface_bbox)
         if self.cfg.isosurface_remove_outliers:
             mesh = mesh.remove_outlier(self.cfg.isosurface_outlier_n_faces_threshold)
+        """ 缓存模型. """
         self.mesh = mesh
+        # Return
         return mesh
 
     def forward(self, points: Float[Tensor, "*N Di"], output_normal: bool = False) -> Dict[str, Float[Tensor, "..."]]:
+        """ 计算模型顶点的特征.
+        :param points: (n_points, 3). 顶点位置.
+        :param output_normal: bool. 是否返回法线.
+        """
         if self.cfg.geometry_only: return {}
         assert output_normal is False, f"Normal output is not supported for {self.__class__.__name__}"
-        points_unscaled = points  # points in the original scale
+        # 1. 将顶点归一化到包围盒中. (n_points, 3).
         points = contract_to_unisphere(points, self.bbox)  # points normalized to (0, 1)
+        # 2. 由神经网络产生特征. (n_points, n_feature_dims).
         enc = self.encoding(points.view(-1, self.cfg.n_input_dims))
         features = self.feature_network(enc).view(*points.shape[:-1], self.cfg.n_feature_dims)
+        # Return
         return {"features": features}
 
     @staticmethod

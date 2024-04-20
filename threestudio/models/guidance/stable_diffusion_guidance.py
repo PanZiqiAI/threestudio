@@ -408,25 +408,14 @@ class StableDiffusionGuidance(BaseObject):
 
     @torch.cuda.amp.autocast(enabled=False)
     @torch.no_grad()
-    def get_noise_pred(
-        self,
-        latents_noisy,
-        t,
-        text_embeddings,
-        use_perp_neg=False,
-        neg_guidance_weights=None,
-    ):
+    def get_noise_pred(self, latents_noisy, t, text_embeddings, use_perp_neg=False, neg_guidance_weights=None):
         batch_size = latents_noisy.shape[0]
 
         if use_perp_neg:
             # pred noise
             latent_model_input = torch.cat([latents_noisy] * 4, dim=0)
             noise_pred = self.forward_unet(
-                latent_model_input,
-                torch.cat([t.reshape(1)] * 4).to(self.device),
-                encoder_hidden_states=text_embeddings,
-            )  # (4B, 3, 64, 64)
-
+                latent_model_input, torch.cat([t.reshape(1)] * 4).to(self.device), encoder_hidden_states=text_embeddings)  # (4B, 3, 64, 64)
             noise_pred_text = noise_pred[:batch_size]
             noise_pred_uncond = noise_pred[batch_size : batch_size * 2]
             noise_pred_neg = noise_pred[batch_size * 2 :]
@@ -436,26 +425,16 @@ class StableDiffusionGuidance(BaseObject):
             n_negative_prompts = neg_guidance_weights.shape[-1]
             for i in range(n_negative_prompts):
                 e_i_neg = noise_pred_neg[i::n_negative_prompts] - noise_pred_uncond
-                accum_grad += neg_guidance_weights[:, i].view(
-                    -1, 1, 1, 1
-                ) * perpendicular_component(e_i_neg, e_pos)
-
-            noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (
-                e_pos + accum_grad
-            )
+                accum_grad += neg_guidance_weights[:, i].view(-1, 1, 1, 1) * perpendicular_component(e_i_neg, e_pos)
+            noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (e_pos + accum_grad)
         else:
             # pred noise
             latent_model_input = torch.cat([latents_noisy] * 2, dim=0)
             noise_pred = self.forward_unet(
-                latent_model_input,
-                torch.cat([t.reshape(1)] * 2).to(self.device),
-                encoder_hidden_states=text_embeddings,
-            )
+                latent_model_input, torch.cat([t.reshape(1)] * 2).to(self.device), encoder_hidden_states=text_embeddings)
             # perform guidance (high scale from paper!)
             noise_pred_text, noise_pred_uncond = noise_pred.chunk(2)
-            noise_pred = noise_pred_text + self.cfg.guidance_scale * (
-                noise_pred_text - noise_pred_uncond
-            )
+            noise_pred = noise_pred_text + self.cfg.guidance_scale * (noise_pred_text - noise_pred_uncond)
 
         return noise_pred
 

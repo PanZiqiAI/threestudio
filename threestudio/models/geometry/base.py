@@ -185,13 +185,6 @@ class BaseExplicitGeometry(BaseGeometry):
 
     def configure(self) -> None:
         self.bbox: Float[Tensor, "2 3"]
-        self.register_buffer(
-            "bbox",
-            torch.as_tensor(
-                [
-                    [-self.cfg.radius, -self.cfg.radius, -self.cfg.radius],
-                    [self.cfg.radius, self.cfg.radius, self.cfg.radius],
-                ],
-                dtype=torch.float32,
-            ),
-        )
+        self.register_buffer("bbox", torch.as_tensor([
+            [-self.cfg.radius, -self.cfg.radius, -self.cfg.radius],
+            [self.cfg.radius, self.cfg.radius, self.cfg.radius]], dtype=torch.float32))

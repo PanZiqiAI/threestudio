@@ -218,7 +218,7 @@ class TetrahedraSDFGrid(BaseExplicitGeometry):
     def create_from(other: BaseGeometry, cfg: Optional[Union[dict, DictConfig]] = None, copy_net: bool = True, **kwargs,) -> "TetrahedraSDFGrid":
         """ 从另外的geometry初始化.
         :param other: 另外的geometry.
-        :param cfg: 另外的geometry对应的配置.
+        :param cfg: 自身的geometry对应的配置.
         :param copy_net: 是否读取另外geometry的的网络参数.
         """
         # --------------------------------------------------------------------------------------------------------------

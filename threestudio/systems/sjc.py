@@ -23,27 +23,21 @@ class ScoreJacobianChaining(BaseLift3DSystem):
 
     def forward(self, batch: Dict[str, Any], decode: bool = False) -> Dict[str, Any]:
         render_out = self.renderer(**batch)
-        out = {
-            **render_out,
-        }
+        out = {**render_out}
         if decode:
             if self.cfg.subpixel_rendering:
                 latent_height, latent_width = 128, 128
             else:
                 latent_height, latent_width = 64, 64
             out["decoded_rgb"] = self.guidance.decode_latents(
-                out["comp_rgb"].permute(0, 3, 1, 2),
-                latent_height=latent_height,
-                latent_width=latent_width,
+                out["comp_rgb"].permute(0, 3, 1, 2), latent_height=latent_height, latent_width=latent_width
             ).permute(0, 2, 3, 1)
         return out
 
     def on_fit_start(self) -> None:
         super().on_fit_start()
         # only used in training
-        self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
-            self.cfg.prompt_processor
-        )
+        self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(self.cfg.prompt_processor)
 
     def on_test_start(self) -> None:
         # check if guidance is initialized, such as when loading from checkpoint
@@ -53,22 +47,16 @@ class ScoreJacobianChaining(BaseLift3DSystem):
     def training_step(self, batch, batch_idx):
         out = self(batch)
         prompt_utils = self.prompt_processor()
-        guidance_out = self.guidance(
-            out["comp_rgb"], prompt_utils, **batch, rgb_as_latents=True
-        )
+        guidance_out = self.guidance(out["comp_rgb"], prompt_utils, **batch, rgb_as_latents=True)
 
         loss = 0.0
-
         for name, value in guidance_out.items():
             self.log(f"train/{name}", value)
             if name.startswith("loss_"):
                 loss += value * self.C(self.cfg.loss[name.replace("loss_", "lambda_")])
-
         loss_emptiness = (
             self.C(self.cfg.loss.lambda_emptiness)
-            * torch.log(1 + self.cfg.loss.emptiness_scale * out["weights"]).mean()
-        )
-
+            * torch.log(1 + self.cfg.loss.emptiness_scale * out["weights"]).mean())
         self.log("train/loss_emptiness", loss_emptiness)
         loss += loss_emptiness
 
@@ -80,20 +68,11 @@ class ScoreJacobianChaining(BaseLift3DSystem):
             center_w = int(self.cfg.loss.center_ratio * w)
             border_h = (h - center_h) // 2
             border_w = (h - center_w) // 2
-            center_depth = comp_depth[
-                ..., border_h : border_h + center_h, border_w : border_w + center_w
-            ]
+            center_depth = comp_depth[..., border_h : border_h + center_h, border_w : border_w + center_w]
             center_depth_mean = center_depth.mean()
-            border_depth_mean = (comp_depth.sum() - center_depth.sum()) / (
-                h * w - center_h * center_w
-            )
+            border_depth_mean = (comp_depth.sum() - center_depth.sum()) / (h * w - center_h * center_w)
             log_input = center_depth_mean - border_depth_mean + 1e-12
-            loss_depth = (
-                torch.sign(log_input)
-                * torch.log(log_input)
-                * self.C(self.cfg.loss.lambda_depth)
-            )
-
+            loss_depth = torch.sign(log_input) * torch.log(log_input) * self.C(self.cfg.loss.lambda_depth)
             self.log("train/loss_depth", loss_depth)
             loss += loss_depth
 

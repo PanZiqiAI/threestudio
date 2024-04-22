@@ -29,16 +29,12 @@ class LatentNeRF(BaseLift3DSystem):
 
     def forward(self, batch: Dict[str, Any], decode: bool = False) -> Dict[str, Any]:
         render_out = self.renderer(**batch)
-        out = {
-            **render_out,
-        }
+        out = {**render_out}
         if decode:
             if self.cfg.refinement:
                 out["decoded_rgb"] = out["comp_rgb"]
             else:
-                out["decoded_rgb"] = self.guidance.decode_latents(
-                    out["comp_rgb"].permute(0, 3, 1, 2)
-                ).permute(0, 2, 3, 1)
+                out["decoded_rgb"] = self.guidance.decode_latents(out["comp_rgb"].permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
         return out
 
     def on_fit_start(self) -> None:

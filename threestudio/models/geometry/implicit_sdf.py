@@ -221,19 +221,12 @@ class ImplicitSDF(BaseImplicitGeometry):
         for param in self.parameters():
             broadcast(param, src=0)
 
-    def get_shifted_sdf(
-        self, points: Float[Tensor, "*N Di"], sdf: Float[Tensor, "*N 1"]
-    ) -> Float[Tensor, "*N 1"]:
+    def get_shifted_sdf(self, points: Float[Tensor, "*N Di"], sdf: Float[Tensor, "*N 1"]) -> Float[Tensor, "*N 1"]:
         sdf_bias: Union[float, Float[Tensor, "*N 1"]]
         if self.cfg.sdf_bias == "ellipsoid":
-            assert (
-                isinstance(self.cfg.sdf_bias_params, Sized)
-                and len(self.cfg.sdf_bias_params) == 3
-            )
+            assert isinstance(self.cfg.sdf_bias_params, Sized) and len(self.cfg.sdf_bias_params) == 3
             size = torch.as_tensor(self.cfg.sdf_bias_params).to(points)
-            sdf_bias = ((points / size) ** 2).sum(
-                dim=-1, keepdim=True
-            ).sqrt() - 1.0  # pseudo signed distance of an ellipsoid
+            sdf_bias = ((points / size) ** 2).sum(dim=-1, keepdim=True).sqrt() - 1.0  # pseudo signed distance of an ellipsoid
         elif self.cfg.sdf_bias == "sphere":
             assert isinstance(self.cfg.sdf_bias_params, float)
             radius = self.cfg.sdf_bias_params
@@ -244,9 +237,7 @@ class ImplicitSDF(BaseImplicitGeometry):
             raise ValueError(f"Unknown sdf bias {self.cfg.sdf_bias}")
         return sdf + sdf_bias
 
-    def forward(
-        self, points: Float[Tensor, "*N Di"], output_normal: bool = False
-    ) -> Dict[str, Float[Tensor, "..."]]:
+    def forward(self, points: Float[Tensor, "*N Di"], output_normal: bool = False) -> Dict[str, Float[Tensor, "..."]]:
         grad_enabled = torch.is_grad_enabled()
 
         if output_normal and self.cfg.normal_type == "analytic":
@@ -254,9 +245,7 @@ class ImplicitSDF(BaseImplicitGeometry):
             points.requires_grad_(True)
 
         points_unscaled = points  # points in the original scale
-        points = contract_to_unisphere(
-            points, self.bbox, self.unbounded
-        )  # points normalized to (0, 1)
+        points = contract_to_unisphere(points, self.bbox, self.unbounded)  # points normalized to (0, 1)
 
         enc = self.encoding(points.view(-1, self.cfg.n_input_dims))
         sdf = self.sdf_network(enc).view(*points.shape[:-1], 1)
@@ -264,50 +253,30 @@ class ImplicitSDF(BaseImplicitGeometry):
         output = {"sdf": sdf}
 
         if self.cfg.n_feature_dims > 0:
-            features = self.feature_network(enc).view(
-                *points.shape[:-1], self.cfg.n_feature_dims
-            )
+            features = self.feature_network(enc).view(*points.shape[:-1], self.cfg.n_feature_dims)
             output.update({"features": features})
 
         if output_normal:
-            if (
-                self.cfg.normal_type == "finite_difference"
-                or self.cfg.normal_type == "finite_difference_laplacian"
-            ):
+            if self.cfg.normal_type == "finite_difference" or self.cfg.normal_type == "finite_difference_laplacian":
                 assert self.finite_difference_normal_eps is not None
                 eps: float = self.finite_difference_normal_eps
                 if self.cfg.normal_type == "finite_difference_laplacian":
-                    offsets: Float[Tensor, "6 3"] = torch.as_tensor(
-                        [
-                            [eps, 0.0, 0.0],
-                            [-eps, 0.0, 0.0],
-                            [0.0, eps, 0.0],
-                            [0.0, -eps, 0.0],
-                            [0.0, 0.0, eps],
-                            [0.0, 0.0, -eps],
-                        ]
-                    ).to(points_unscaled)
-                    points_offset: Float[Tensor, "... 6 3"] = (
-                        points_unscaled[..., None, :] + offsets
-                    ).clamp(-self.cfg.radius, self.cfg.radius)
-                    sdf_offset: Float[Tensor, "... 6 1"] = self.forward_sdf(
-                        points_offset
-                    )
-                    sdf_grad = (
-                        0.5
-                        * (sdf_offset[..., 0::2, 0] - sdf_offset[..., 1::2, 0])
-                        / eps
-                    )
+                    offsets: Float[Tensor, "6 3"] = torch.as_tensor([
+                        [eps, 0.0, 0.0],
+                        [-eps, 0.0, 0.0],
+                        [0.0, eps, 0.0],
+                        [0.0, -eps, 0.0],
+                        [0.0, 0.0, eps],
+                        [0.0, 0.0, -eps]]).to(points_unscaled)
+                    points_offset = (points_unscaled[..., None, :] + offsets).clamp(-self.cfg.radius, self.cfg.radius)
+                    sdf_offset: Float[Tensor, "... 6 1"] = self.forward_sdf(points_offset)
+                    sdf_grad = 0.5 * (sdf_offset[..., 0::2, 0] - sdf_offset[..., 1::2, 0]) / eps
                 else:
                     offsets: Float[Tensor, "3 3"] = torch.as_tensor(
-                        [[eps, 0.0, 0.0], [0.0, eps, 0.0], [0.0, 0.0, eps]]
-                    ).to(points_unscaled)
+                        [[eps, 0.0, 0.0], [0.0, eps, 0.0], [0.0, 0.0, eps]]).to(points_unscaled)
                     points_offset: Float[Tensor, "... 3 3"] = (
-                        points_unscaled[..., None, :] + offsets
-                    ).clamp(-self.cfg.radius, self.cfg.radius)
-                    sdf_offset: Float[Tensor, "... 3 1"] = self.forward_sdf(
-                        points_offset
-                    )
+                        points_unscaled[..., None, :] + offsets).clamp(-self.cfg.radius, self.cfg.radius)
+                    sdf_offset: Float[Tensor, "... 3 1"] = self.forward_sdf(points_offset)
                     sdf_grad = (sdf_offset[..., 0::1, 0] - sdf) / eps
                 normal = F.normalize(sdf_grad, dim=-1)
             elif self.cfg.normal_type == "pred":
@@ -315,36 +284,24 @@ class ImplicitSDF(BaseImplicitGeometry):
                 normal = F.normalize(normal, dim=-1)
                 sdf_grad = normal
             elif self.cfg.normal_type == "analytic":
-                sdf_grad = -torch.autograd.grad(
-                    sdf,
-                    points_unscaled,
-                    grad_outputs=torch.ones_like(sdf),
-                    create_graph=True,
-                )[0]
+                sdf_grad = -torch.autograd.grad(sdf, points_unscaled, grad_outputs=torch.ones_like(sdf), create_graph=True)[0]
                 normal = F.normalize(sdf_grad, dim=-1)
                 if not grad_enabled:
                     sdf_grad = sdf_grad.detach()
                     normal = normal.detach()
             else:
                 raise AttributeError(f"Unknown normal type {self.cfg.normal_type}")
-            output.update(
-                {"normal": normal, "shading_normal": normal, "sdf_grad": sdf_grad}
-            )
+            output.update({"normal": normal, "shading_normal": normal, "sdf_grad": sdf_grad})
         return output
 
     def forward_sdf(self, points: Float[Tensor, "*N Di"]) -> Float[Tensor, "*N 1"]:
         points_unscaled = points
         points = contract_to_unisphere(points_unscaled, self.bbox, self.unbounded)
-
-        sdf = self.sdf_network(
-            self.encoding(points.reshape(-1, self.cfg.n_input_dims))
-        ).reshape(*points.shape[:-1], 1)
+        sdf = self.sdf_network(self.encoding(points.reshape(-1, self.cfg.n_input_dims))).reshape(*points.shape[:-1], 1)
         sdf = self.get_shifted_sdf(points_unscaled, sdf)
         return sdf
 
-    def forward_field(
-        self, points: Float[Tensor, "*N Di"]
-    ) -> Tuple[Float[Tensor, "*N 1"], Optional[Float[Tensor, "*N 3"]]]:
+    def forward_field(self, points: Float[Tensor, "*N Di"]) -> Tuple[Float[Tensor, "*N 1"], Optional[Float[Tensor, "*N 3"]]]:
         points_unscaled = points
         points = contract_to_unisphere(points_unscaled, self.bbox, self.unbounded)
         enc = self.encoding(points.reshape(-1, self.cfg.n_input_dims))
@@ -355,9 +312,7 @@ class ImplicitSDF(BaseImplicitGeometry):
             deformation = self.deformation_network(enc).reshape(*points.shape[:-1], 3)
         return sdf, deformation
 
-    def forward_level(
-        self, field: Float[Tensor, "*N 1"], threshold: float
-    ) -> Float[Tensor, "*N 1"]:
+    def forward_level(self, field: Float[Tensor, "*N 1"], threshold: float) -> Float[Tensor, "*N 1"]:
         return field - threshold
 
     def export(self, points: Float[Tensor, "*N Di"], **kwargs) -> Dict[str, Any]:

@@ -18,7 +18,7 @@ from threestudio.utils.typing import *
 class NVDiffRasterizer(Rasterizer):
     @dataclass
     class Config(VolumeRenderer.Config):
-        context_type: str = "gl"
+        context_type: str = "cuda"
 
     cfg: Config
 

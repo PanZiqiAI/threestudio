@@ -201,23 +201,31 @@ class StableDiffusionVSDGuidance(BaseModule):
                 num_inference_steps: int, guidance_scale: float, num_images_per_prompt: int = 1,
                 height: Optional[int] = None, width: Optional[int] = None, class_labels: Optional[Float[Tensor, "BB 16"]] = None,
                 cross_attention_kwargs: Optional[Dict[str, Any]] = None, generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None) -> Float[Tensor, "B H W 3"]:
-        vae_scale_factor = 2 ** (len(pipe.vae.config.block_out_channels) - 1)
-        height = height or pipe.unet.config.sample_size * vae_scale_factor
-        width = width or pipe.unet.config.sample_size * vae_scale_factor
+        """
+        :param pipe:
+        :param sample_scheduler:
+        :param text_embeddings: (batch, 77, 768).
+        :param num_inference_steps: Int.
+        :param guidance_scale: Float.
+        :param num_images_per_prompt: Int.
+        :param height: Int.
+        :param width: Int.
+        :param class_labels: (batch, 16=4x4).
+        :param cross_attention_kwargs: Dict.
+        :param generator:
+        """
+        height, width = map(
+            lambda _x: _x or pipe.unet.config.sample_size * (2**(len(pipe.vae.config.block_out_channels)-1)), [height, width])
         batch_size = text_embeddings.shape[0] // 2
-        device = self.device
-
-        sample_scheduler.set_timesteps(num_inference_steps, device=device)
-        timesteps = sample_scheduler.timesteps
-        num_channels_latents = pipe.unet.config.in_channels
-
+        # 设置时间步.
+        sample_scheduler.set_timesteps(num_inference_steps, device=self.device)
+        # 1. Latents.
         latents = pipe.prepare_latents(
-            batch_size * num_images_per_prompt, num_channels_latents, height, width, self.weights_dtype, device, generator)
-
-        for i, t in enumerate(timesteps):
+            batch_size * num_images_per_prompt, pipe.unet.config.in_channels, height, width, self.weights_dtype, self.device, generator)
+        # 2. 去噪.
+        for i, t in enumerate(sample_scheduler.timesteps):
             # expand the latents if we are doing classifier free guidance
-            latent_model_input = torch.cat([latents] * 2)
-            latent_model_input = sample_scheduler.scale_model_input(latent_model_input, t)
+            latent_model_input = sample_scheduler.scale_model_input(torch.cat([latents] * 2), t)
             # predict the noise residual
             if class_labels is None:
                 with self.disable_unet_class_embedding(pipe.unet) as unet:
@@ -232,7 +240,7 @@ class StableDiffusionVSDGuidance(BaseModule):
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
             # compute the previous noisy sample x_t -> x_t-1
             latents = sample_scheduler.step(noise_pred, t, latents).prev_sample
-
+        # 最终图像.
         latents = 1 / pipe.vae.config.scaling_factor * latents
         images = pipe.vae.decode(latents).sample
         images = (images / 2 + 0.5).clamp(0, 1)

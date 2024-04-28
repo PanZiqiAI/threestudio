@@ -24,9 +24,7 @@ class ProlificDreamer(BaseLift3DSystem):
         # set up geometry, material, background, renderer
         super().configure()
         self.guidance = threestudio.find(self.cfg.guidance_type)(self.cfg.guidance)
-        self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(
-            self.cfg.prompt_processor
-        )
+        self.prompt_processor = threestudio.find(self.cfg.prompt_processor_type)(self.cfg.prompt_processor)
         self.prompt_utils = self.prompt_processor()
 
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
@@ -34,9 +32,7 @@ class ProlificDreamer(BaseLift3DSystem):
             render_out = self.renderer(**batch, render_rgb=False)
         else:
             render_out = self.renderer(**batch)
-        return {
-            **render_out,
-        }
+        return {**render_out}
 
     def on_fit_start(self) -> None:
         super().on_fit_start()
@@ -46,14 +42,10 @@ class ProlificDreamer(BaseLift3DSystem):
 
         if self.cfg.stage == "geometry":
             guidance_inp = out["comp_normal"]
-            guidance_out = self.guidance(
-                guidance_inp, self.prompt_utils, **batch, rgb_as_latents=False
-            )
+            guidance_out = self.guidance(guidance_inp, self.prompt_utils, **batch, rgb_as_latents=False)
         else:
             guidance_inp = out["comp_rgb"]
-            guidance_out = self.guidance(
-                guidance_inp, self.prompt_utils, **batch, rgb_as_latents=False
-            )
+            guidance_out = self.guidance(guidance_inp, self.prompt_utils, **batch, rgb_as_latents=False)
 
         loss = 0.0
 
@@ -94,9 +86,7 @@ class ProlificDreamer(BaseLift3DSystem):
 
             # sdf loss
             if "sdf_grad" in out:
-                loss_eikonal = (
-                    (torch.linalg.norm(out["sdf_grad"], ord=2, dim=-1) - 1.0) ** 2
-                ).mean()
+                loss_eikonal = ((torch.linalg.norm(out["sdf_grad"], ord=2, dim=-1) - 1.0) ** 2).mean()
                 self.log("train/loss_eikonal", loss_eikonal)
                 loss += loss_eikonal * self.C(self.cfg.loss.lambda_eikonal)
                 self.log("train/inv_std", out["inv_std"], prog_bar=True)
@@ -104,16 +94,12 @@ class ProlificDreamer(BaseLift3DSystem):
         elif self.cfg.stage == "geometry":
             loss_normal_consistency = out["mesh"].normal_consistency()
             self.log("train/loss_normal_consistency", loss_normal_consistency)
-            loss += loss_normal_consistency * self.C(
-                self.cfg.loss.lambda_normal_consistency
-            )
+            loss += loss_normal_consistency * self.C(self.cfg.loss.lambda_normal_consistency)
 
             if self.C(self.cfg.loss.lambda_laplacian_smoothness) > 0:
                 loss_laplacian_smoothness = out["mesh"].laplacian()
                 self.log("train/loss_laplacian_smoothness", loss_laplacian_smoothness)
-                loss += loss_laplacian_smoothness * self.C(
-                    self.cfg.loss.lambda_laplacian_smoothness
-                )
+                loss += loss_laplacian_smoothness * self.C(self.cfg.loss.lambda_laplacian_smoothness)
         elif self.cfg.stage == "texture":
             pass
         else:
@@ -128,38 +114,11 @@ class ProlificDreamer(BaseLift3DSystem):
         out = self(batch)
         self.save_image_grid(
             f"it{self.true_global_step}-{batch['index'][0]}.png",
-            (
-                [
-                    {
-                        "type": "rgb",
-                        "img": out["comp_rgb"][0],
-                        "kwargs": {"data_format": "HWC"},
-                    },
-                ]
-                if "comp_rgb" in out
-                else []
-            )
-            + (
-                [
-                    {
-                        "type": "rgb",
-                        "img": out["comp_normal"][0],
-                        "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
-                    }
-                ]
-                if "comp_normal" in out
-                else []
-            )
-            + [
-                {
-                    "type": "grayscale",
-                    "img": out["opacity"][0, :, :, 0],
-                    "kwargs": {"cmap": None, "data_range": (0, 1)},
-                },
-            ],
+            ([{"type": "rgb", "img": out["comp_rgb"][0], "kwargs": {"data_format": "HWC"}}] if "comp_rgb" in out else []) +
+            ([{"type": "rgb", "img": out["comp_normal"][0], "kwargs": {"data_format": "HWC", "data_range": (0, 1)}}] if "comp_normal" in out else []) +
+            [{"type": "grayscale", "img": out["opacity"][0, :, :, 0], "kwargs": {"cmap": None, "data_range": (0, 1)}}],
             name="validation_step",
-            step=self.true_global_step,
-        )
+            step=self.true_global_step)
 
         if self.cfg.visualize_samples:
             self.save_image_grid(

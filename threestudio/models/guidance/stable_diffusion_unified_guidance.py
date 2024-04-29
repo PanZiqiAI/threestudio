@@ -97,46 +97,30 @@ class StableDiffusionUnifiedGuidance(BaseModule):
             pipe_phi: Optional[StableDiffusionPipeline] = None
             controlnet: Optional[ControlNetModel] = None
 
-        self.weights_dtype = (
-            torch.float16 if self.cfg.half_precision_weights else torch.float32
-        )
+        self.weights_dtype = (torch.float16 if self.cfg.half_precision_weights else torch.float32)
 
         threestudio.info(f"Loading Stable Diffusion ...")
 
         pipe_kwargs = {
-            "tokenizer": None,
-            "safety_checker": None,
-            "feature_extractor": None,
-            "requires_safety_checker": False,
-            "torch_dtype": self.weights_dtype,
-        }
-        pipe = StableDiffusionPipeline.from_pretrained(
-            self.cfg.pretrained_model_name_or_path,
-            **pipe_kwargs,
-        ).to(self.device)
+            "tokenizer": None, "safety_checker": None, "feature_extractor": None, "requires_safety_checker": False, "torch_dtype": self.weights_dtype}
+        pipe = StableDiffusionPipeline.from_pretrained(self.cfg.pretrained_model_name_or_path, **pipe_kwargs).to(self.device)
         self.prepare_pipe(pipe)
         self.configure_pipe_token_merging(pipe)
 
         # phi network for VSD
         # introduce two trainable modules:
-        # - self.camera_embedding
+        # - self.camera_embedding (pipe_phi.unet.class_embedding)
         # - self.lora_layers
         pipe_phi = None
 
         # if the phi network shares the same unet with the pretrain network
         # we need to pass additional cross attention kwargs to the unet
-        self.vsd_share_model = (
-            self.cfg.guidance_type == "vsd"
-            and self.cfg.vsd_phi_model_name_or_path is None
-        )
+        self.vsd_share_model = self.cfg.guidance_type == "vsd" and self.cfg.vsd_phi_model_name_or_path is None
         if self.cfg.guidance_type == "vsd":
             if self.cfg.vsd_phi_model_name_or_path is None:
                 pipe_phi = pipe
             else:
-                pipe_phi = StableDiffusionPipeline.from_pretrained(
-                    self.cfg.vsd_phi_model_name_or_path,
-                    **pipe_kwargs,
-                ).to(self.device)
+                pipe_phi = StableDiffusionPipeline.from_pretrained(self.cfg.vsd_phi_model_name_or_path, **pipe_kwargs).to(self.device)
                 self.prepare_pipe(pipe_phi)
                 self.configure_pipe_token_merging(pipe_phi)
 
@@ -150,41 +134,26 @@ class StableDiffusionUnifiedGuidance(BaseModule):
                     raise ValueError("Invalid camera condition type!")
 
                 # FIXME: hard-coded output dim
-                self.camera_embedding = ToDTypeWrapper(
-                    TimestepEmbedding(self.camera_embedding_dim, 1280),
-                    self.weights_dtype,
-                ).to(self.device)
-                pipe_phi.unet.class_embedding = self.camera_embedding
+                pipe_phi.unet.class_embedding = ToDTypeWrapper(
+                    TimestepEmbedding(self.camera_embedding_dim, 1280), self.weights_dtype).to(self.device)
 
             if self.cfg.vsd_use_lora:
                 # set up LoRA layers
                 lora_attn_procs = {}
                 for name in pipe_phi.unet.attn_processors.keys():
-                    cross_attention_dim = (
-                        None
-                        if name.endswith("attn1.processor")
-                        else pipe_phi.unet.config.cross_attention_dim
-                    )
+                    cross_attention_dim = None if name.endswith("attn1.processor") else pipe_phi.unet.config.cross_attention_dim
                     if name.startswith("mid_block"):
                         hidden_size = pipe_phi.unet.config.block_out_channels[-1]
                     elif name.startswith("up_blocks"):
                         block_id = int(name[len("up_blocks.")])
-                        hidden_size = list(
-                            reversed(pipe_phi.unet.config.block_out_channels)
-                        )[block_id]
+                        hidden_size = list(reversed(pipe_phi.unet.config.block_out_channels))[block_id]
                     elif name.startswith("down_blocks"):
                         block_id = int(name[len("down_blocks.")])
                         hidden_size = pipe_phi.unet.config.block_out_channels[block_id]
-
-                    lora_attn_procs[name] = LoRAAttnProcessor(
-                        hidden_size=hidden_size, cross_attention_dim=cross_attention_dim
-                    )
-
+                    lora_attn_procs[name] = LoRAAttnProcessor(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
                 pipe_phi.unet.set_attn_processor(lora_attn_procs)
 
-                self.lora_layers = AttnProcsLayers(pipe_phi.unet.attn_processors).to(
-                    self.device
-                )
+                self.lora_layers = AttnProcsLayers(pipe_phi.unet.attn_processors).to(self.device)
                 self.lora_layers._load_state_dict_pre_hooks.clear()
                 self.lora_layers._state_dict_hooks.clear()
 

@@ -1,4 +1,9 @@
 
+export DIFFUSERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+
 P1="a blue jay standing on a large basket of rainbow macarons"
 P2="a knight chopping wood"
 P3="a man with big dick is fucking a sexy women wearing stocks"
@@ -9,7 +14,7 @@ P7="Donald Trump is eating a pancake"
 P8="Xi Jinping is eating a pancake"
 
 
-for PROMPT in "${P1}" "${P2}" "${P3}" "${P4}" "${P5}" "${P6}" "${P7}" "${P8}" ; do
+for PROMPT in "${P4}" "${P8}" ; do
     python launch.py --config configs/sjc.yaml --train --gpu 0 \
       system.prompt_processor.prompt="${PROMPT}" \
       name="sjc/baseline"

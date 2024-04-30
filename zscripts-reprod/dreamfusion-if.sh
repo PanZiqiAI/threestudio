@@ -1,4 +1,9 @@
 
+export DIFFUSERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+
 P1="a blue jay standing on a large basket of rainbow macarons"
 P2="a knight chopping wood"
 P3="a man with big dick is fucking a sexy women wearing stocks"

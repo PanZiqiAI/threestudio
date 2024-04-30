@@ -15,7 +15,7 @@ P8="Xi Jinping is eating a pancake"
 
 
 for PROMPT in "${P1}" "${P2}" "${P3}" "${P4}" "${P5}" "${P6}" "${P7}" "${P8}" ; do
-    python launch.py --config configs/sjc.yaml --train --gpu 0 \
+    python launch.py --config configs/textmesh-if.yaml --train --gpu 0 \
       system.prompt_processor.prompt="${PROMPT}" \
-      name="sjc/baseline"
+      name="textmesh-if/baseline"
 done

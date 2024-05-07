@@ -411,11 +411,17 @@ class StableDiffusionUnifiedGuidance(BaseModule):
     def forward(self, rgb: Float[Tensor, "B H W C"], prompt_utils: PromptProcessorOutput, elevation: Float[Tensor, "B"],
                 azimuth: Float[Tensor, "B"], camera_distances: Float[Tensor, "B"], mvp_mtx: Float[Tensor, "B 4 4"],
                 c2w: Float[Tensor, "B 4 4"], rgb_as_latents=False, **kwargs):
-        batch_size = rgb.shape[0]
 
+        batch_size = rgb.shape[0]
+        # --------------------------------------------------------------------------------------------------------------
+        # Images.
+        # --------------------------------------------------------------------------------------------------------------
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
         latents: Float[Tensor, "B 4 Hl Wl"]
         rgb_BCHW_512 = F.interpolate(rgb_BCHW, (512, 512), mode="bilinear", align_corners=False)
+        # --------------------------------------------------------------------------------------------------------------
+        # Latents.
+        # --------------------------------------------------------------------------------------------------------------
         if rgb_as_latents:
             # treat input rgb as latents
             # input rgb should be in range [-1, 1]
@@ -426,16 +432,21 @@ class StableDiffusionUnifiedGuidance(BaseModule):
             # encode image into latents with vae
             latents = self.vae_encode(self.pipe.vae, rgb_BCHW_512 * 2.0 - 1.0)
 
+        # 时间步.
         # sample timestep
         # use the same timestep for each batch
         assert self.min_step is not None and self.max_step is not None
         t = torch.randint(
             self.min_step, self.max_step + 1, [1], dtype=torch.long, device=self.device).repeat(batch_size)
-
+        # (1) 加噪.
         # sample noise
         noise = torch.randn_like(latents)
         latents_noisy = self.scheduler.add_noise(latents, noise, t)
-
+        # (2) 获取eps_pretrain
+        """ 对应于:
+        1. sds: noise_pred.
+        2. vsd: noise_pred_est.
+        """
         eps_pretrain = self.get_eps_pretrain(latents_noisy, t, prompt_utils, elevation, azimuth, camera_distances)
 
         latents_1step_orig = (1 / self.alphas[t].view(-1, 1, 1, 1) * (latents_noisy - self.sigmas[t].view(-1, 1, 1, 1) * eps_pretrain)).detach()
@@ -456,6 +467,9 @@ class StableDiffusionUnifiedGuidance(BaseModule):
             eps_phi = self.get_eps_phi(
                 latents_noisy, t, prompt_utils, elevation, azimuth, camera_distances, camera_condition)
 
+            ############################################################################################################
+            # 计算Phi训练损失.
+            ############################################################################################################
             loss_train_phi = self.train_phi(
                 latents, prompt_utils, elevation, azimuth, camera_distances, camera_condition)
 

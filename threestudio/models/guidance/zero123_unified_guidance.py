@@ -220,67 +220,38 @@ class Zero123UnifiedGuidance(BaseModule):
 
     def prepare_image_embeddings(self) -> None:
         if not os.path.exists(self.cfg.cond_image_path):
-            raise RuntimeError(
-                f"Condition image not found at {self.cfg.cond_image_path}"
-            )
+            raise RuntimeError(f"Condition image not found at {self.cfg.cond_image_path}")
         image = Image.open(self.cfg.cond_image_path).convert("RGBA").resize((256, 256))
-        image = (
-            TF.to_tensor(image)
-            .unsqueeze(0)
-            .to(device=self.device, dtype=self.weights_dtype)
-        )
+        image = TF.to_tensor(image).unsqueeze(0).to(device=self.device, dtype=self.weights_dtype)
         # rgba -> rgb, apply white background
         image = image[:, :3] * image[:, 3:4] + (1 - image[:, 3:4])
 
         with torch.no_grad():
-            self.clip_image_embeddings: Float[
-                Tensor, "1 1 D"
-            ] = self.extract_clip_image_embeddings(image)
+            self.clip_image_embeddings: Float[Tensor, "1 1 D"] = self.extract_clip_image_embeddings(image)
 
             # encoded latents should be multiplied with vae.config.scaling_factor
             # but zero123 was not trained this way
-            self.image_latents: Float[Tensor, "1 4 Hl Wl"] = (
-                self.vae_encode(self.pipe.vae, image * 2.0 - 1.0, mode=True)
-                / self.pipe.vae.config.scaling_factor
-            )
+            self.image_latents: Float[Tensor, "1 4 Hl Wl"] = \
+                self.vae_encode(self.pipe.vae, image * 2.0 - 1.0, mode=True) / self.pipe.vae.config.scaling_factor
 
-    def extract_clip_image_embeddings(
-        self, images: Float[Tensor, "B 3 H W"]
-    ) -> Float[Tensor, "B 1 D"]:
+    def extract_clip_image_embeddings(self, images: Float[Tensor, "B 3 H W"]) -> Float[Tensor, "B 1 D"]:
         # expect images in [0, 1]
         images_pil = [TF.to_pil_image(image) for image in images]
         images_processed = self.pipe.feature_extractor(
-            images=images_pil, return_tensors="pt"
-        ).pixel_values.to(device=self.device, dtype=self.weights_dtype)
+            images=images_pil, return_tensors="pt").pixel_values.to(device=self.device, dtype=self.weights_dtype)
         clip_image_embeddings = self.pipe.image_encoder(images_processed).image_embeds
         return clip_image_embeddings.to(images.dtype)
 
-    def get_image_camera_embeddings(
-        self,
-        elevation_deg: Float[Tensor, "B"],
-        azimuth_deg: Float[Tensor, "B"],
-        camera_distances: Float[Tensor, "B"],
-    ) -> Float[Tensor, "B 1 D"]:
+    def get_image_camera_embeddings(self, elevation_deg: Float[Tensor, "B"], azimuth_deg: Float[Tensor, "B"], camera_distances: Float[Tensor, "B"]) -> Float[Tensor, "B 1 D"]:
         batch_size = elevation_deg.shape[0]
-        camera_embeddings: Float[Tensor, "B 1 4"] = torch.stack(
-            [
-                torch.deg2rad(self.cfg.cond_elevation_deg - elevation_deg),
-                torch.sin(torch.deg2rad(azimuth_deg - self.cfg.cond_azimuth_deg)),
-                torch.cos(torch.deg2rad(azimuth_deg - self.cfg.cond_azimuth_deg)),
-                camera_distances - self.cfg.cond_camera_distance,
-            ],
-            dim=-1,
-        )[:, None, :]
+        camera_embeddings: Float[Tensor, "B 1 4"] = torch.stack([
+            torch.deg2rad(self.cfg.cond_elevation_deg - elevation_deg),
+            torch.sin(torch.deg2rad(azimuth_deg - self.cfg.cond_azimuth_deg)),
+            torch.cos(torch.deg2rad(azimuth_deg - self.cfg.cond_azimuth_deg)),
+            camera_distances - self.cfg.cond_camera_distance], dim=-1)[:, None, :]
 
         image_camera_embeddings = self.pipe.clip_camera_projection(
-            torch.cat(
-                [
-                    self.clip_image_embeddings.repeat(batch_size, 1, 1),
-                    camera_embeddings,
-                ],
-                dim=-1,
-            ).to(self.weights_dtype)
-        )
+            torch.cat([self.clip_image_embeddings.repeat(batch_size, 1, 1), camera_embeddings], dim=-1).to(self.weights_dtype))
 
         return image_camera_embeddings
 
@@ -299,38 +270,26 @@ class Zero123UnifiedGuidance(BaseModule):
     ) -> Float[Tensor, "..."]:
         input_dtype = latents.dtype
         pred = unet(
-            latents.to(unet.dtype),
-            t.to(unet.dtype),
-            encoder_hidden_states=encoder_hidden_states.to(unet.dtype),
-            class_labels=class_labels,
-            cross_attention_kwargs=cross_attention_kwargs,
-            down_block_additional_residuals=down_block_additional_residuals,
-            mid_block_additional_residual=mid_block_additional_residual,
-        ).sample
+            latents.to(unet.dtype), t.to(unet.dtype),
+            encoder_hidden_states=encoder_hidden_states.to(unet.dtype), class_labels=class_labels,
+            cross_attention_kwargs=cross_attention_kwargs, down_block_additional_residuals=down_block_additional_residuals,
+            mid_block_additional_residual=mid_block_additional_residual).sample
         if velocity_to_epsilon:
-            pred = latents * self.sigmas[t].view(-1, 1, 1, 1) + pred * self.alphas[
-                t
-            ].view(-1, 1, 1, 1)
+            pred = latents * self.sigmas[t].view(-1, 1, 1, 1) + pred * self.alphas[t].view(-1, 1, 1, 1)
         return pred.to(input_dtype)
 
     @torch.cuda.amp.autocast(enabled=False)
-    def vae_encode(
-        self, vae: AutoencoderKL, imgs: Float[Tensor, "B 3 H W"], mode=False
-    ) -> Float[Tensor, "B 4 Hl Wl"]:
+    def vae_encode(self, vae: AutoencoderKL, imgs: Float[Tensor, "B 3 H W"], mode=False) -> Float[Tensor, "B 4 Hl Wl"]:
         # expect input in [-1, 1]
         input_dtype = imgs.dtype
         posterior = vae.encode(imgs.to(vae.dtype)).latent_dist
-        if mode:
-            latents = posterior.mode()
-        else:
-            latents = posterior.sample()
+        if mode: latents = posterior.mode()
+        else: latents = posterior.sample()
         latents = latents * vae.config.scaling_factor
         return latents.to(input_dtype)
 
     @torch.cuda.amp.autocast(enabled=False)
-    def vae_decode(
-        self, vae: AutoencoderKL, latents: Float[Tensor, "B 4 Hl Wl"]
-    ) -> Float[Tensor, "B 3 H W"]:
+    def vae_decode(self, vae: AutoencoderKL, latents: Float[Tensor, "B 4 Hl Wl"]) -> Float[Tensor, "B 3 H W"]:
         # output in [0, 1]
         input_dtype = latents.dtype
         latents = 1 / vae.config.scaling_factor * latents
@@ -354,55 +313,26 @@ class Zero123UnifiedGuidance(BaseModule):
         yield pipe
         pipe.scheduler = scheduler_orig
 
-    def get_eps_pretrain(
-        self,
-        latents_noisy: Float[Tensor, "B 4 Hl Wl"],
-        t: Int[Tensor, "B"],
-        image_camera_embeddings: Float[Tensor, "B 1 D"],
-        elevation: Float[Tensor, "B"],
-        azimuth: Float[Tensor, "B"],
-        camera_distances: Float[Tensor, "B"],
-    ) -> Float[Tensor, "B 4 Hl Wl"]:
+    def get_eps_pretrain(self, latents_noisy: Float[Tensor, "B 4 Hl Wl"], t: Int[Tensor, "B"], image_camera_embeddings: Float[Tensor, "B 1 D"],
+                         elevation: Float[Tensor, "B"], azimuth: Float[Tensor, "B"], camera_distances: Float[Tensor, "B"]) -> Float[Tensor, "B 4 Hl Wl"]:
         batch_size = latents_noisy.shape[0]
 
         with torch.no_grad():
             with self.disable_unet_class_embedding(self.pipe.unet) as unet:
                 noise_pred = self.forward_unet(
-                    unet,
-                    torch.cat(
-                        [
-                            torch.cat([latents_noisy] * 2, dim=0),
-                            torch.cat(
-                                [
-                                    self.image_latents.repeat(batch_size, 1, 1, 1),
-                                    torch.zeros_like(self.image_latents).repeat(
-                                        batch_size, 1, 1, 1
-                                    ),
-                                ],
-                                dim=0,
-                            ),
-                        ],
-                        dim=1,
-                    ),
+                    unet, torch.cat([
+                        torch.cat([latents_noisy] * 2, dim=0),
+                        torch.cat([
+                            self.image_latents.repeat(batch_size, 1, 1, 1),
+                            torch.zeros_like(self.image_latents).repeat(batch_size, 1, 1, 1)], dim=0)], dim=1),
                     torch.cat([t] * 2, dim=0),
                     encoder_hidden_states=torch.cat(
-                        [
-                            image_camera_embeddings,
-                            torch.zeros_like(image_camera_embeddings),
-                        ],
-                        dim=0,
-                    ),
-                    cross_attention_kwargs={"scale": 0.0}
-                    if self.vsd_share_model
-                    else None,
-                    velocity_to_epsilon=self.pipe.scheduler.config.prediction_type
-                    == "v_prediction",
-                )
+                        [image_camera_embeddings, torch.zeros_like(image_camera_embeddings)], dim=0),
+                    cross_attention_kwargs={"scale": 0.0} if self.vsd_share_model else None,
+                    velocity_to_epsilon=self.pipe.scheduler.config.prediction_type == "v_prediction")
 
         noise_pred_image, noise_pred_uncond = noise_pred.chunk(2)
-        noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (
-            noise_pred_image - noise_pred_uncond
-        )
+        noise_pred = noise_pred_uncond + self.cfg.guidance_scale * (noise_pred_image - noise_pred_uncond)
 
         return noise_pred
 
@@ -421,36 +351,20 @@ class Zero123UnifiedGuidance(BaseModule):
         with torch.no_grad():
             noise_pred = self.forward_unet(
                 self.pipe_phi.unet,
-                torch.cat(
-                    [
-                        torch.cat([latents_noisy] * 2, dim=0),
-                        torch.cat(
-                            [self.image_latents.repeat(batch_size, 1, 1, 1)] * 2,
-                            dim=0,
-                        ),
-                    ],
-                    dim=1,
-                ),
+                torch.cat([
+                    torch.cat([latents_noisy] * 2, dim=0),
+                    torch.cat([self.image_latents.repeat(batch_size, 1, 1, 1)] * 2, dim=0)], dim=1),
                 torch.cat([t] * 2, dim=0),
                 encoder_hidden_states=torch.cat([image_camera_embeddings] * 2, dim=0),
-                class_labels=torch.cat(
-                    [
-                        camera_condition.view(batch_size, -1),
-                        torch.zeros_like(camera_condition.view(batch_size, -1)),
-                    ],
-                    dim=0,
-                )
-                if self.cfg.vsd_use_camera_condition
-                else None,
+                class_labels=torch.cat([
+                    camera_condition.view(batch_size, -1),
+                    torch.zeros_like(camera_condition.view(batch_size, -1))
+                ], dim=0) if self.cfg.vsd_use_camera_condition else None,
                 cross_attention_kwargs={"scale": 1.0},
-                velocity_to_epsilon=self.pipe_phi.scheduler.config.prediction_type
-                == "v_prediction",
-            )
+                velocity_to_epsilon=self.pipe_phi.scheduler.config.prediction_type == "v_prediction")
 
         noise_pred_camera, noise_pred_uncond = noise_pred.chunk(2)
-        noise_pred = noise_pred_uncond + self.cfg.vsd_guidance_scale_phi * (
-            noise_pred_camera - noise_pred_uncond
-        )
+        noise_pred = noise_pred_uncond + self.cfg.vsd_guidance_scale_phi * (noise_pred_camera - noise_pred_uncond)
 
         return noise_pred
 
@@ -511,17 +425,10 @@ class Zero123UnifiedGuidance(BaseModule):
         )
         return F.mse_loss(noise_pred.float(), target.float(), reduction="mean")
 
-    def forward(
-        self,
-        rgb: Float[Tensor, "B H W C"],
-        elevation: Float[Tensor, "B"],
-        azimuth: Float[Tensor, "B"],
-        camera_distances: Float[Tensor, "B"],
-        mvp_mtx: Float[Tensor, "B 4 4"],
-        c2w: Float[Tensor, "B 4 4"],
-        rgb_as_latents=False,
-        **kwargs,
-    ):
+    def forward(self, rgb: Float[Tensor, "B H W C"], elevation: Float[Tensor, "B"], azimuth: Float[Tensor, "B"],
+                camera_distances: Float[Tensor, "B"], mvp_mtx: Float[Tensor, "B 4 4"], c2w: Float[Tensor, "B 4 4"],
+                rgb_as_latents=False, **kwargs):
+
         batch_size = rgb.shape[0]
 
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
@@ -529,15 +436,11 @@ class Zero123UnifiedGuidance(BaseModule):
         if rgb_as_latents:
             # treat input rgb as latents
             # input rgb should be in range [-1, 1]
-            latents = F.interpolate(
-                rgb_BCHW, (32, 32), mode="bilinear", align_corners=False
-            )
+            latents = F.interpolate(rgb_BCHW, (32, 32), mode="bilinear", align_corners=False)
         else:
             # treat input rgb as rgb
             # input rgb should be in range [0, 1]
-            rgb_BCHW = F.interpolate(
-                rgb_BCHW, (256, 256), mode="bilinear", align_corners=False
-            )
+            rgb_BCHW = F.interpolate(rgb_BCHW, (256, 256), mode="bilinear", align_corners=False)
             # encode image into latents with vae
             latents = self.vae_encode(self.pipe.vae, rgb_BCHW * 2.0 - 1.0)
 
@@ -545,76 +448,34 @@ class Zero123UnifiedGuidance(BaseModule):
         # use the same timestep for each batch
         assert self.min_step is not None and self.max_step is not None
         t = torch.randint(
-            self.min_step,
-            self.max_step + 1,
-            [1],
-            dtype=torch.long,
-            device=self.device,
-        ).repeat(batch_size)
+            self.min_step, self.max_step+1, [1], dtype=torch.long, device=self.device).repeat(batch_size)
 
         # sample noise
         noise = torch.randn_like(latents)
         latents_noisy = self.scheduler.add_noise(latents, noise, t)
 
         # image-camera feature condition
-        image_camera_embeddings = self.get_image_camera_embeddings(
-            elevation, azimuth, camera_distances
-        )
+        image_camera_embeddings = self.get_image_camera_embeddings(elevation, azimuth, camera_distances)
 
         eps_pretrain = self.get_eps_pretrain(
-            latents_noisy,
-            t,
-            image_camera_embeddings,
-            elevation,
-            azimuth,
-            camera_distances,
-        )
+            latents_noisy, t, image_camera_embeddings, elevation, azimuth, camera_distances)
 
         latents_1step_orig = (
-            1
-            / self.alphas[t].view(-1, 1, 1, 1)
-            * (latents_noisy - self.sigmas[t].view(-1, 1, 1, 1) * eps_pretrain)
-        ).detach()
+            1 / self.alphas[t].view(-1, 1, 1, 1) * (latents_noisy - self.sigmas[t].view(-1, 1, 1, 1) * eps_pretrain)).detach()
 
         if self.cfg.guidance_type == "sds":
             eps_phi = noise
         elif self.cfg.guidance_type == "vsd":
-            if self.cfg.vsd_camera_condition_type == "extrinsics":
-                camera_condition = c2w
-            elif self.cfg.vsd_camera_condition_type == "mvp":
-                camera_condition = mvp_mtx
-            elif self.cfg.vsd_camera_condition_type == "spherical":
-                camera_condition = torch.stack(
-                    [
-                        torch.deg2rad(elevation),
-                        torch.sin(torch.deg2rad(azimuth)),
-                        torch.cos(torch.deg2rad(azimuth)),
-                        camera_distances,
-                    ],
-                    dim=-1,
-                )
-            else:
-                raise ValueError(
-                    f"Unknown camera_condition_type {self.cfg.vsd_camera_condition_type}"
-                )
+            if self.cfg.vsd_camera_condition_type == "extrinsics": camera_condition = c2w
+            elif self.cfg.vsd_camera_condition_type == "mvp": camera_condition = mvp_mtx
+            elif self.cfg.vsd_camera_condition_type == "spherical": camera_condition = torch.stack([
+                torch.deg2rad(elevation), torch.sin(torch.deg2rad(azimuth)), torch.cos(torch.deg2rad(azimuth)), camera_distances
+            ], dim=-1)
+            else: raise ValueError(f"Unknown camera_condition_type {self.cfg.vsd_camera_condition_type}")
             eps_phi = self.get_eps_phi(
-                latents_noisy,
-                t,
-                image_camera_embeddings,
-                elevation,
-                azimuth,
-                camera_distances,
-                camera_condition,
-            )
-
+                latents_noisy, t, image_camera_embeddings, elevation, azimuth, camera_distances, camera_condition)
             loss_train_phi = self.train_phi(
-                latents,
-                image_camera_embeddings,
-                elevation,
-                azimuth,
-                camera_distances,
-                camera_condition,
-            )
+                latents, image_camera_embeddings, elevation, azimuth, camera_distances, camera_condition)
 
         if self.cfg.weighting_strategy == "dreamfusion":
             w = (1.0 - self.alphas[t]).view(-1, 1, 1, 1)
@@ -622,13 +483,9 @@ class Zero123UnifiedGuidance(BaseModule):
             w = 1.0
         elif self.cfg.weighting_strategy == "fantasia3d":
             w = (self.alphas[t] ** 0.5 * (1 - self.alphas[t])).view(-1, 1, 1, 1)
-        else:
-            raise ValueError(
-                f"Unknown weighting strategy: {self.cfg.weighting_strategy}"
-            )
+        else: raise ValueError(f"Unknown weighting strategy: {self.cfg.weighting_strategy}")
 
         grad = w * (eps_pretrain - eps_phi)
-
         if self.grad_clip_val is not None:
             grad = grad.clamp(-self.grad_clip_val, self.grad_clip_val)
 
@@ -693,11 +550,7 @@ class Zero123UnifiedGuidance(BaseModule):
             )
 
         if self.cfg.guidance_type == "vsd":
-            guidance_out.update(
-                {
-                    "loss_train_phi": loss_train_phi,
-                }
-            )
+            guidance_out.update({"loss_train_phi": loss_train_phi})
 
         return guidance_out
 

@@ -63,31 +63,24 @@ class NeuSVolumeRenderer(VolumeRenderer):
 
     cfg: Config
 
-    def configure(
-        self,
-        geometry: BaseImplicitGeometry,
-        material: BaseMaterial,
-        background: BaseBackground,
-    ) -> None:
+    def configure(self, geometry: BaseImplicitGeometry, material: BaseMaterial, background: BaseBackground) -> None:
         super().configure(geometry, material, background)
+        """ Variance. """
         self.variance = LearnedVariance(self.cfg.learned_variance_init)
+        # --------------------------------------------------------------------------------------------------------------
+        # Estimator.
+        # --------------------------------------------------------------------------------------------------------------
         if self.cfg.estimator == "occgrid":
-            self.estimator = nerfacc.OccGridEstimator(
-                roi_aabb=self.bbox.view(-1), resolution=32, levels=1
-            )
+            self.estimator = nerfacc.OccGridEstimator(roi_aabb=self.bbox.view(-1), resolution=32, levels=1)
             if not self.cfg.grid_prune:
                 self.estimator.occs.fill_(True)
                 self.estimator.binaries.fill_(True)
-            self.render_step_size = (
-                1.732 * 2 * self.cfg.radius / self.cfg.num_samples_per_ray
-            )
+            self.render_step_size = 1.732 * 2 * self.cfg.radius / self.cfg.num_samples_per_ray
             self.randomized = self.cfg.randomized
         elif self.cfg.estimator == "importance":
             self.estimator = ImportanceEstimator()
         else:
-            raise NotImplementedError(
-                "unknown estimator, should be in ['occgrid', 'importance']"
-            )
+            raise NotImplementedError("unknown estimator, should be in ['occgrid', 'importance']")
         self.cos_anneal_ratio = 1.0
 
     def get_alpha(self, sdf, normal, dirs, dists):
@@ -99,9 +92,7 @@ class NeuSVolumeRenderer(VolumeRenderer):
             # "cos_anneal_ratio" grows from 0 to 1 in the beginning training iterations. The anneal strategy below makes
             # the cos value "not dead" at the beginning training iterations, for better convergence.
             iter_cos = -(
-                F.relu(-true_cos * 0.5 + 0.5) * (1.0 - self.cos_anneal_ratio)
-                + F.relu(-true_cos) * self.cos_anneal_ratio
-            )  # always non-positive
+                F.relu(-true_cos * 0.5 + 0.5) * (1.0 - self.cos_anneal_ratio) + F.relu(-true_cos) * self.cos_anneal_ratio)  # always non-positive
 
             # Estimate signed distances at section points
             estimated_next_sdf = sdf + iter_cos * dists * 0.5
@@ -116,22 +107,12 @@ class NeuSVolumeRenderer(VolumeRenderer):
             alpha = ((p + 1e-5) / (c + 1e-5)).clip(0.0, 1.0)
         return alpha
 
-    def forward(
-        self,
-        rays_o: Float[Tensor, "B H W 3"],
-        rays_d: Float[Tensor, "B H W 3"],
-        light_positions: Float[Tensor, "B 3"],
-        bg_color: Optional[Tensor] = None,
-        **kwargs
-    ) -> Dict[str, Float[Tensor, "..."]]:
+    def forward(self, rays_o: Float[Tensor, "B H W 3"], rays_d: Float[Tensor, "B H W 3"], light_positions: Float[Tensor, "B 3"],
+                bg_color: Optional[Tensor] = None, **kwargs) -> Dict[str, Float[Tensor, "..."]]:
         batch_size, height, width = rays_o.shape[:3]
         rays_o_flatten: Float[Tensor, "Nr 3"] = rays_o.reshape(-1, 3)
         rays_d_flatten: Float[Tensor, "Nr 3"] = rays_d.reshape(-1, 3)
-        light_positions_flatten: Float[Tensor, "Nr 3"] = (
-            light_positions.reshape(-1, 1, 1, 3)
-            .expand(-1, height, width, -1)
-            .reshape(-1, 3)
-        )
+        light_positions_flatten: Float[Tensor, "Nr 3"] = light_positions.reshape(-1, 1, 1, 3).expand(-1, height, width, -1).reshape(-1, 3)
         n_rays = rays_o_flatten.shape[0]
 
         if self.cfg.estimator == "occgrid":
@@ -145,11 +126,7 @@ class NeuSVolumeRenderer(VolumeRenderer):
                 if self.training:
                     sdf = self.geometry.forward_sdf(positions)[..., 0]
                 else:
-                    sdf = chunk_batch(
-                        self.geometry.forward_sdf,
-                        self.cfg.eval_chunk_size,
-                        positions,
-                    )[..., 0]
+                    sdf = chunk_batch(self.geometry.forward_sdf, self.cfg.eval_chunk_size, positions)[..., 0]
 
                 inv_std = self.variance(sdf)
                 if self.cfg.use_volsdf:
@@ -168,57 +145,29 @@ class NeuSVolumeRenderer(VolumeRenderer):
             if not self.cfg.grid_prune:
                 with torch.no_grad():
                     ray_indices, t_starts_, t_ends_ = self.estimator.sampling(
-                        rays_o_flatten,
-                        rays_d_flatten,
-                        alpha_fn=None,
-                        near_plane=self.cfg.near_plane,
-                        far_plane=self.cfg.far_plane,
-                        render_step_size=self.render_step_size,
-                        alpha_thre=0.0,
-                        stratified=self.randomized,
-                        cone_angle=0.0,
-                        early_stop_eps=0,
-                    )
+                        rays_o_flatten, rays_d_flatten, alpha_fn=None, near_plane=self.cfg.near_plane, far_plane=self.cfg.far_plane,
+                        render_step_size=self.render_step_size, alpha_thre=0.0, stratified=self.randomized, cone_angle=0.0, early_stop_eps=0)
             else:
                 with torch.no_grad():
                     ray_indices, t_starts_, t_ends_ = self.estimator.sampling(
-                        rays_o_flatten,
-                        rays_d_flatten,
-                        alpha_fn=alpha_fn if self.cfg.prune_alpha_threshold else None,
-                        near_plane=self.cfg.near_plane,
-                        far_plane=self.cfg.far_plane,
-                        render_step_size=self.render_step_size,
-                        alpha_thre=0.01 if self.cfg.prune_alpha_threshold else 0.0,
-                        stratified=self.randomized,
-                        cone_angle=0.0,
-                    )
+                        rays_o_flatten, rays_d_flatten, alpha_fn=alpha_fn if self.cfg.prune_alpha_threshold else None,
+                        near_plane=self.cfg.near_plane, far_plane=self.cfg.far_plane, render_step_size=self.render_step_size,
+                        alpha_thre=0.01 if self.cfg.prune_alpha_threshold else 0.0, stratified=self.randomized, cone_angle=0.0)
         elif self.cfg.estimator == "importance":
 
-            def prop_sigma_fn(
-                t_starts: Float[Tensor, "Nr Ns"],
-                t_ends: Float[Tensor, "Nr Ns"],
-                proposal_network,
-            ):
+            def prop_sigma_fn(t_starts: Float[Tensor, "Nr Ns"], t_ends: Float[Tensor, "Nr Ns"], proposal_network):
                 if self.cfg.use_volsdf:
                     t_origins: Float[Tensor, "Nr 1 3"] = rays_o_flatten.unsqueeze(-2)
                     t_dirs: Float[Tensor, "Nr 1 3"] = rays_d_flatten.unsqueeze(-2)
-                    positions: Float[Tensor, "Nr Ns 3"] = (
-                        t_origins + t_dirs * (t_starts + t_ends)[..., None] / 2.0
-                    )
+                    positions: Float[Tensor, "Nr Ns 3"] = t_origins + t_dirs * (t_starts + t_ends)[..., None] / 2.0
                     with torch.no_grad():
                         geo_out = chunk_batch(
-                            proposal_network,
-                            self.cfg.eval_chunk_size,
-                            positions.reshape(-1, 3),
-                            output_normal=False,
-                        )
+                            proposal_network, self.cfg.eval_chunk_size, positions.reshape(-1, 3), output_normal=False)
                         inv_std = self.variance(geo_out["sdf"])
                         density = volsdf_density(geo_out["sdf"], inv_std)
                     return density.reshape(positions.shape[:2])
                 else:
-                    raise ValueError(
-                        "Currently only VolSDF supports importance sampling."
-                    )
+                    raise ValueError("Currently only VolSDF supports importance sampling.")
 
             t_starts_, t_ends_ = self.estimator.sampling(
                 prop_sigma_fns=[partial(prop_sigma_fn, proposal_network=self.geometry)],
@@ -230,20 +179,13 @@ class NeuSVolumeRenderer(VolumeRenderer):
                 sampling_type="uniform",
                 stratified=self.randomized,
             )
-            ray_indices = (
-                torch.arange(n_rays, device=rays_o_flatten.device)
-                .unsqueeze(-1)
-                .expand(-1, t_starts_.shape[1])
-            )
+            ray_indices = torch.arange(n_rays, device=rays_o_flatten.device).unsqueeze(-1).expand(-1, t_starts_.shape[1])
             ray_indices = ray_indices.flatten()
             t_starts_ = t_starts_.flatten()
             t_ends_ = t_ends_.flatten()
-        else:
-            raise NotImplementedError
+        else: raise NotImplementedError
 
-        ray_indices, t_starts_, t_ends_ = validate_empty_rays(
-            ray_indices, t_starts_, t_ends_
-        )
+        ray_indices, t_starts_, t_ends_ = validate_empty_rays(ray_indices, t_starts_, t_ends_)
         ray_indices = ray_indices.long()
         t_starts, t_ends = t_starts_[..., None], t_ends_[..., None]
         t_origins = rays_o_flatten[ray_indices]
@@ -255,54 +197,23 @@ class NeuSVolumeRenderer(VolumeRenderer):
 
         if self.training:
             geo_out = self.geometry(positions, output_normal=True)
-            rgb_fg_all = self.material(
-                viewdirs=t_dirs,
-                positions=positions,
-                light_positions=t_light_positions,
-                **geo_out,
-                **kwargs
-            )
+            rgb_fg_all = self.material(viewdirs=t_dirs, positions=positions, light_positions=t_light_positions, **geo_out, **kwargs)
             comp_rgb_bg = self.background(dirs=rays_d)
         else:
-            geo_out = chunk_batch(
-                self.geometry,
-                self.cfg.eval_chunk_size,
-                positions,
-                output_normal=True,
-            )
+            geo_out = chunk_batch(self.geometry, self.cfg.eval_chunk_size, positions, output_normal=True)
             rgb_fg_all = chunk_batch(
-                self.material,
-                self.cfg.eval_chunk_size,
-                viewdirs=t_dirs,
-                positions=positions,
-                light_positions=t_light_positions,
-                **geo_out
-            )
-            comp_rgb_bg = chunk_batch(
-                self.background, self.cfg.eval_chunk_size, dirs=rays_d
-            )
+                self.material, self.cfg.eval_chunk_size, viewdirs=t_dirs, positions=positions, light_positions=t_light_positions, **geo_out)
+            comp_rgb_bg = chunk_batch(self.background, self.cfg.eval_chunk_size, dirs=rays_d)
 
         # grad or normal?
-        alpha: Float[Tensor, "Nr 1"] = self.get_alpha(
-            geo_out["sdf"], geo_out["normal"], t_dirs, t_intervals
-        )
+        alpha: Float[Tensor, "Nr 1"] = self.get_alpha(geo_out["sdf"], geo_out["normal"], t_dirs, t_intervals)
 
         weights: Float[Tensor, "Nr 1"]
-        weights_, _ = nerfacc.render_weight_from_alpha(
-            alpha[..., 0],
-            ray_indices=ray_indices,
-            n_rays=n_rays,
-        )
+        weights_, _ = nerfacc.render_weight_from_alpha(alpha[..., 0], ray_indices=ray_indices, n_rays=n_rays)
         weights = weights_[..., None]
-        opacity: Float[Tensor, "Nr 1"] = nerfacc.accumulate_along_rays(
-            weights[..., 0], values=None, ray_indices=ray_indices, n_rays=n_rays
-        )
-        depth: Float[Tensor, "Nr 1"] = nerfacc.accumulate_along_rays(
-            weights[..., 0], values=t_positions, ray_indices=ray_indices, n_rays=n_rays
-        )
-        comp_rgb_fg: Float[Tensor, "Nr Nc"] = nerfacc.accumulate_along_rays(
-            weights[..., 0], values=rgb_fg_all, ray_indices=ray_indices, n_rays=n_rays
-        )
+        opacity: Float[Tensor, "Nr 1"] = nerfacc.accumulate_along_rays(weights[..., 0], values=None, ray_indices=ray_indices, n_rays=n_rays)
+        depth: Float[Tensor, "Nr 1"] = nerfacc.accumulate_along_rays(weights[..., 0], values=t_positions, ray_indices=ray_indices, n_rays=n_rays)
+        comp_rgb_fg: Float[Tensor, "Nr Nc"] = nerfacc.accumulate_along_rays(weights[..., 0], values=rgb_fg_all, ray_indices=ray_indices, n_rays=n_rays)
 
         if bg_color is None:
             bg_color = comp_rgb_bg
@@ -335,11 +246,7 @@ class NeuSVolumeRenderer(VolumeRenderer):
         else:
             if "normal" in geo_out:
                 comp_normal: Float[Tensor, "Nr 3"] = nerfacc.accumulate_along_rays(
-                    weights[..., 0],
-                    values=geo_out["normal"],
-                    ray_indices=ray_indices,
-                    n_rays=n_rays,
-                )
+                    weights[..., 0], values=geo_out["normal"], ray_indices=ray_indices, n_rays=n_rays)
                 comp_normal = F.normalize(comp_normal, dim=-1)
                 comp_normal = (comp_normal + 1.0) / 2.0 * opacity  # for visualization
                 out.update(
@@ -350,14 +257,8 @@ class NeuSVolumeRenderer(VolumeRenderer):
         out.update({"inv_std": self.variance.inv_std})
         return out
 
-    def update_step(
-        self, epoch: int, global_step: int, on_load_weights: bool = False
-    ) -> None:
-        self.cos_anneal_ratio = (
-            1.0
-            if self.cfg.cos_anneal_end_steps == 0
-            else min(1.0, global_step / self.cfg.cos_anneal_end_steps)
-        )
+    def update_step(self, epoch: int, global_step: int, on_load_weights: bool = False) -> None:
+        self.cos_anneal_ratio = 1.0 if self.cfg.cos_anneal_end_steps == 0 else min(1.0, global_step / self.cfg.cos_anneal_end_steps)
         if self.cfg.estimator == "occgrid":
             if self.cfg.grid_prune:
 
@@ -377,9 +278,7 @@ class NeuSVolumeRenderer(VolumeRenderer):
                     return alpha
 
                 if self.training and not on_load_weights:
-                    self.estimator.update_every_n_steps(
-                        step=global_step, occ_eval_fn=occ_eval_fn
-                    )
+                    self.estimator.update_every_n_steps(step=global_step, occ_eval_fn=occ_eval_fn)
 
     def train(self, mode=True):
         self.randomized = mode and self.cfg.randomized

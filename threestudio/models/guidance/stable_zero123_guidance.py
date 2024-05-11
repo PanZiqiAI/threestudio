@@ -147,23 +147,10 @@ class StableZero123Guidance(BaseObject):
     def prepare_embeddings(self, image_path: str) -> None:
         # load cond image for zero123
         assert os.path.exists(image_path)
-        rgba = cv2.cvtColor(
-            cv2.imread(image_path, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGRA2RGBA
-        )
-        rgba = (
-            cv2.resize(rgba, (256, 256), interpolation=cv2.INTER_AREA).astype(
-                np.float32
-            )
-            / 255.0
-        )
+        rgba = cv2.cvtColor(cv2.imread(image_path, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGRA2RGBA)
+        rgba = cv2.resize(rgba, (256, 256), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
         rgb = rgba[..., :3] * rgba[..., 3:] + (1 - rgba[..., 3:])
-        self.rgb_256: Float[Tensor, "1 3 H W"] = (
-            torch.from_numpy(rgb)
-            .unsqueeze(0)
-            .permute(0, 3, 1, 2)
-            .contiguous()
-            .to(self.device)
-        )
+        self.rgb_256: Float[Tensor, "1 3 H W"] = torch.from_numpy(rgb).unsqueeze(0).permute(0, 3, 1, 2).contiguous().to(self.device)
         self.c_crossattn, self.c_concat = self.get_img_embeds(self.rgb_256)
 
     @torch.cuda.amp.autocast(enabled=False)
@@ -209,47 +196,20 @@ class StableZero123Guidance(BaseObject):
         c_concat=None,
         **kwargs,
     ) -> dict:
-        T = torch.stack(
-            [
-                torch.deg2rad(
-                    (90 - elevation) - (90 - self.cfg.cond_elevation_deg)
-                ),  # Zero123 polar is 90-elevation
-                torch.sin(torch.deg2rad(azimuth - self.cfg.cond_azimuth_deg)),
-                torch.cos(torch.deg2rad(azimuth - self.cfg.cond_azimuth_deg)),
-                torch.deg2rad(
-                    90 - torch.full_like(elevation, self.cfg.cond_elevation_deg)
-                ),
-            ],
-            dim=-1,
-        )[:, None, :].to(self.device)
+        T = torch.stack([
+            torch.deg2rad((90 - elevation) - (90 - self.cfg.cond_elevation_deg)),  # Zero123 polar is 90-elevation
+            torch.sin(torch.deg2rad(azimuth - self.cfg.cond_azimuth_deg)),
+            torch.cos(torch.deg2rad(azimuth - self.cfg.cond_azimuth_deg)),
+            torch.deg2rad(90 - torch.full_like(elevation, self.cfg.cond_elevation_deg))
+        ], dim=-1)[:, None, :].to(self.device)
         cond = {}
-        clip_emb = self.model.cc_projection(
-            torch.cat(
-                [
-                    (self.c_crossattn if c_crossattn is None else c_crossattn).repeat(
-                        len(T), 1, 1
-                    ),
-                    T,
-                ],
-                dim=-1,
-            )
-        )
-        cond["c_crossattn"] = [
-            torch.cat([torch.zeros_like(clip_emb).to(self.device), clip_emb], dim=0)
-        ]
-        cond["c_concat"] = [
-            torch.cat(
-                [
-                    torch.zeros_like(self.c_concat)
-                    .repeat(len(T), 1, 1, 1)
-                    .to(self.device),
-                    (self.c_concat if c_concat is None else c_concat).repeat(
-                        len(T), 1, 1, 1
-                    ),
-                ],
-                dim=0,
-            )
-        ]
+        clip_emb = self.model.cc_projection(torch.cat(
+            [(self.c_crossattn if c_crossattn is None else c_crossattn).repeat(len(T), 1, 1), T], dim=-1))
+        cond["c_crossattn"] = [torch.cat([torch.zeros_like(clip_emb).to(self.device), clip_emb], dim=0)]
+        cond["c_concat"] = [torch.cat([
+            torch.zeros_like(self.c_concat).repeat(len(T), 1, 1, 1).to(self.device),
+            (self.c_concat if c_concat is None else c_concat).repeat(len(T), 1, 1, 1)
+        ], dim=0)]
         return cond
 
     def __call__(
@@ -266,15 +226,9 @@ class StableZero123Guidance(BaseObject):
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
         latents: Float[Tensor, "B 4 64 64"]
         if rgb_as_latents:
-            latents = (
-                F.interpolate(rgb_BCHW, (32, 32), mode="bilinear", align_corners=False)
-                * 2
-                - 1
-            )
+            latents = F.interpolate(rgb_BCHW, (32, 32), mode="bilinear", align_corners=False) * 2 - 1
         else:
-            rgb_BCHW_512 = F.interpolate(
-                rgb_BCHW, (256, 256), mode="bilinear", align_corners=False
-            )
+            rgb_BCHW_512 = F.interpolate(rgb_BCHW, (256, 256), mode="bilinear", align_corners=False)
             # encode image into latents with vae
             latents = self.encode_images(rgb_BCHW_512)
 

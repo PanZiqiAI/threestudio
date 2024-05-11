@@ -119,14 +119,10 @@ class GANVolumeRenderer(VolumeRenderer):
             g_code_rgb = self.global_encoder(F.interpolate(lr_rgb, (224, 224)))
             comp_gan_rgb = self.generator(torch.cat([lr_rgb, z_map], dim=1), g_code_rgb)
         elif generator_level == 1:
-            g_code_rgb = self.global_encoder(
-                F.interpolate(gt_rgb.permute(0, 3, 1, 2), (224, 224))
-            )
+            g_code_rgb = self.global_encoder(F.interpolate(gt_rgb.permute(0, 3, 1, 2), (224, 224)))
             comp_gan_rgb = self.generator(torch.cat([lr_rgb, z_map], dim=1), g_code_rgb)
         elif generator_level == 2:
-            g_code_rgb = self.global_encoder(
-                F.interpolate(gt_rgb.permute(0, 3, 1, 2), (224, 224))
-            )
+            g_code_rgb = self.global_encoder(F.interpolate(gt_rgb.permute(0, 3, 1, 2), (224, 224)))
             l_code_rgb = self.local_encoder(gt_rgb.permute(0, 3, 1, 2))
             posterior = DiagonalGaussianDistribution(l_code_rgb)
             z_map = posterior.sample()
@@ -134,14 +130,11 @@ class GANVolumeRenderer(VolumeRenderer):
 
         comp_rgb = F.interpolate(comp_rgb.permute(0, 3, 1, 2), (H, W), mode="bilinear")
         comp_gan_rgb = F.interpolate(comp_gan_rgb, (H, W), mode="bilinear")
-        out.update(
-            {
-                "posterior": posterior,
-                "comp_gan_rgb": comp_gan_rgb.permute(0, 2, 3, 1),
-                "comp_rgb": comp_rgb.permute(0, 2, 3, 1),
-                "generator_level": generator_level,
-            }
-        )
+        out.update({
+            "posterior": posterior,
+            "comp_gan_rgb": comp_gan_rgb.permute(0, 2, 3, 1),
+            "comp_rgb": comp_rgb.permute(0, 2, 3, 1),
+            "generator_level": generator_level})
 
         if gt_rgb is not None and multi_level_guidance:
             out.update({"comp_int_rgb": comp_int_rgb, "comp_gt_rgb": comp_gt_rgb})

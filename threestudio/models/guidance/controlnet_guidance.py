@@ -61,9 +61,7 @@ class ControlNetGuidance(BaseObject):
         elif self.cfg.control_type == "canny":
             controlnet_name_or_path = "lllyasviel/control_v11p_sd15_canny"
 
-        self.weights_dtype = (
-            torch.float16 if self.cfg.half_precision_weights else torch.float32
-        )
+        self.weights_dtype = (torch.float16 if self.cfg.half_precision_weights else torch.float32)
 
         pipe_kwargs = {
             "safety_checker": None,
@@ -266,26 +264,16 @@ class ControlNetGuidance(BaseObject):
 
     def prepare_image_cond(self, cond_rgb: Float[Tensor, "B H W C"]):
         if self.cfg.control_type == "normal":
-            cond_rgb = (
-                (cond_rgb[0].detach().cpu().numpy() * 255).astype(np.uint8).copy()
-            )
+            cond_rgb = (cond_rgb[0].detach().cpu().numpy() * 255).astype(np.uint8).copy()
             detected_map = self.preprocessor(cond_rgb)
-            control = (
-                torch.from_numpy(np.array(detected_map)).float().to(self.device) / 255.0
-            )
+            control = torch.from_numpy(np.array(detected_map)).float().to(self.device) / 255.0
             control = control.unsqueeze(0)
             control = control.permute(0, 3, 1, 2)
         elif self.cfg.control_type == "canny":
-            cond_rgb = (
-                (cond_rgb[0].detach().cpu().numpy() * 255).astype(np.uint8).copy()
-            )
+            cond_rgb = (cond_rgb[0].detach().cpu().numpy() * 255).astype(np.uint8).copy()
             blurred_img = cv2.blur(cond_rgb, ksize=(5, 5))
-            detected_map = self.preprocessor(
-                blurred_img, self.cfg.canny_lower_bound, self.cfg.canny_upper_bound
-            )
-            control = (
-                torch.from_numpy(np.array(detected_map)).float().to(self.device) / 255.0
-            )
+            detected_map = self.preprocessor(blurred_img, self.cfg.canny_lower_bound, self.cfg.canny_upper_bound)
+            control = torch.from_numpy(np.array(detected_map)).float().to(self.device) / 255.0
             control = control.unsqueeze(-1).repeat(1, 1, 3)
             control = control.unsqueeze(0)
             control = control.permute(0, 3, 1, 2)
@@ -344,7 +332,6 @@ class ControlNetGuidance(BaseObject):
         assert rgb.shape[:-1] == cond_rgb.shape[:-1]
 
         rgb_BCHW = rgb.permute(0, 3, 1, 2)
-        latents: Float[Tensor, "B 4 DH DW"]
         if self.cfg.fixed_size > 0:
             RH, RW = self.cfg.fixed_size, self.cfg.fixed_size
         else:
